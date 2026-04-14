@@ -1,0 +1,59 @@
+project:
+  required:
+    - name
+    - entity_type
+  properties:
+    name: string
+    entity_type: string
+
+input:
+  required:
+    - type
+    - primary_key
+  properties:
+    type: enum[csv,excel,xlsx,xls,json,api,rest,graphql]
+    path: string
+    primary_key: string
+    schema: map[string,string]
+    options: map[string,any]
+    auth: map[string,any]
+
+scoring:
+  properties:
+    rules: list
+    feature_weights: map[string,float]
+    route_thresholds: map[string,int]
+    confidence_weights: map[string,float]
+    tier_thresholds: map[string,int]
+
+expansion:
+  properties:
+    max_nodes: int
+    variation_rules: map[string,any]
+    relationship_expansion_enabled: bool
+
+connectors:
+  item:
+    required:
+      - type
+    properties:
+      type: string
+      config: map[string,any]
+
+output:
+  item:
+    required:
+      - type
+      - path
+    properties:
+      type: enum[json,csv,excel,parquet,database,webhook,api]
+      path: string
+      include_tiers: list[string]
+      options: map[string,any]
+
+runtime:
+  properties:
+    max_recursion_depth: int
+    recurse_on_confidence: float
+    cache_enabled: bool
+

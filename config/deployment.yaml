@@ -1,0 +1,46 @@
+infrastructure:
+  compute:
+    type: spot_preferred
+    min_vcpu: 8
+    min_memory_gb: 16
+    max_concurrent_tasks: 100
+  storage:
+    cache:
+      type: redis
+      host: localhost
+      port: 6379
+      ttl_days: 30
+    results:
+      type: s3_compatible
+      bucket: phoenix-results
+      prefix: runs/{run_id}/
+  queue:
+    type: redis
+    broker_url: redis://localhost:6379/0
+    result_backend: redis://localhost:6379/1
+
+scaling:
+  auto_scale: true
+  scale_up_threshold: 0.8
+  scale_down_threshold: 0.3
+  cooldown_seconds: 300
+
+monitoring:
+  metrics:
+    - tasks_completed
+    - avg_confidence_score
+    - connector_error_rate
+    - cache_hit_ratio
+  alerts:
+    - name: High Error Rate
+      condition: connector_error_rate > 0.1
+      action: slack_notify
+    - name: Low Confidence Output
+      condition: avg_confidence_score < 50
+      action: email_notify
+
+security:
+  api_auth: api_key
+  data_encryption: at_rest
+  audit_logging: true
+

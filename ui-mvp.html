@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RentSeeker - Spatial Data Explorer MVP</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@400;600;900&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-void: #0a0a0c;
+            --acc-green: #ABFF02; /* High viz industrial */
+            --tx-primary: #F5F3EE;
+            --tx-dim: #88888b;
+            --bd-light: rgba(255, 255, 255, 0.1);
+            --bd-glow: rgba(171, 255, 2, 0.3);
+            --card-width: 420px;
+            --header-h: 80px;
+        }
+
+        * {
+            box-sizing: border-box;
+            cursor: none; /* Custom cursor everywhere */
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100vh;
+            background-color: var(--bg-void);
+            color: var(--tx-primary);
+            font-family: 'Space Mono', monospace;
+            overflow: hidden; 
+            touch-action: none;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* Ambient Background Grid */
+        .ambient-grid {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-size: 50px 50px;
+            background-image: 
+                linear-gradient(to right, rgba(255,255,255,0.02) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(255,255,255,0.02) 1px, transparent 1px);
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        /* Fixed Brand Overlay */
+        .header-bar {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            height: var(--header-h);
+            border-bottom: 1px solid var(--bd-light);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 4rem;
+            z-index: 50;
+            background: rgba(10, 10, 12, 0.8);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+        }
+
+        .brand {
+            font-family: 'Inter', sans-serif;
+            font-weight: 900;
+            font-size: 1.2rem;
+            letter-spacing: -0.02em;
+            text-transform: uppercase;
+        }
+
+        .brand span { color: var(--acc-green); }
+
+        .sys-status {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            font-size: 0.8rem;
+            color: var(--acc-green);
+            text-transform: uppercase;
+        }
+        .pulse-dot {
+            width: 6px; height: 6px;
+            background-color: var(--acc-green);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(171,255,2,0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(171,255,2,0); }
+            100% { box-shadow: 0 0 0 0 rgba(171,255,2,0); }
+        }
+
+        /* Horizontal Viewport */
+        #viewport {
+            position: fixed;
+            top: var(--header-h); left: 0; bottom: 0; right: 0;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            z-index: 10;
+        }
+
+        #scroll-container {
+            display: flex;
+            flex-wrap: nowrap;
+            height: 100%;
+            padding: 3rem 50vw 3rem 4rem;
+            will-change: transform;
+            gap: 2rem;
+            align-items: stretch;
+        }
+
+        /* Card (Parcel) Design */
+        .parcel-card {
+            min-width: var(--card-width);
+            width: var(--card-width);
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--bd-light);
+            display: flex;
+            flex-direction: column;
+            transition: all 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .parcel-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 2px;
+            background: var(--acc-green);
+            transform: scaleX(0);
+            transform-origin: left;
+            transition: transform 0.4s cubic-bezier(0.25, 1, 0.5, 1);
+            z-index: 2;
+        }
+
+        .parcel-card.hero {
+            background: rgba(171, 255, 2, 0.03);
+            border-color: rgba(171, 255, 2, 0.3);
+        }
+
+        .parcel-card.hero::before {
+            transform: scaleX(1);
+        }
+
+        .parcel-card:hover {
+            transform: translateY(-8px);
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(255, 255, 255, 0.3);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+        }
+
+        .parcel-card:hover::before {
+            transform: scaleX(1);
+        }
+
+        .card-header {
+            padding: 1.5rem;
+            border-bottom: 1px solid var(--bd-light);
+            background: rgba(0,0,0,0.2);
+            position: relative;
+        }
+
+        .tag-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 1rem;
+        }
+
+        .t-id {
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            color: #fff;
+        }
+
+        .hero .t-id {
+            color: var(--acc-green);
+        }
+
+        .t-badge {
+            font-size: 0.7rem;
+            background: rgba(255,255,255,0.1);
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            text-transform: uppercase;
+        }
+
+        .t-address {
+            font-family: 'Inter', sans-serif;
+            font-weight: 600;
+            font-size: 1rem;
+            color: var(--tx-dim);
+            line-height: 1.4;
+        }
+
+        .card-body {
+            padding: 1.5rem;
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+        }
+
+        .data-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            border-bottom: 1px dotted var(--bd-light);
+            padding-bottom: 0.5rem;
+        }
+
+        .d-label {
+            font-size: 0.75rem;
+            color: var(--tx-dim);
+            text-transform: uppercase;
+        }
+
+        .d-val {
+            font-size: 0.9rem;
+            color: #fff;
+            font-weight: 700;
+        }
+
+        .d-val.highlight {
+            color: var(--acc-green);
+        }
+        
+        .progress-bar-bg {
+            width: 100%;
+            height: 4px;
+            background: rgba(255,255,255,0.1);
+            margin-top: 0.5rem;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: var(--acc-green);
+            transform-origin: left;
+        }
+
+        /* Custom UI Scrollbar for narrative/scrubbing metaphor */
+        .timeline-scrubber {
+            position: fixed;
+            bottom: 30px;
+            left: 4rem;
+            right: 4rem;
+            height: 2px;
+            background: var(--bd-light);
+            z-index: 50;
+        }
+
+        .timeline-head {
+            position: absolute;
+            top: -5px;
+            left: 0;
+            width: 12px;
+            height: 12px;
+            background: var(--acc-green);
+            transform: translateX(-50%);
+            will-change: left;
+            border-radius: 50%;
+        }
+
+        /* Custom Cursor */
+        #cursor-dot {
+            position: fixed;
+            top: 0; left: 0;
+            width: 8px; height: 8px;
+            background-color: var(--acc-green);
+            pointer-events: none;
+            z-index: 9999;
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+            will-change: transform;
+        }
+
+        #cursor-ring {
+            position: fixed;
+            top: 0; left: 0;
+            width: 40px; height: 40px;
+            border: 1px solid var(--acc-green);
+            pointer-events: none;
+            z-index: 9998;
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+            will-change: transform;
+            transition: width 0.2s, height 0.2s, background 0.2s;
+        }
+
+        .cursor-hover #cursor-ring {
+            width: 60px; height: 60px;
+            background: rgba(171, 255, 2, 0.1);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="ambient-grid"></div>
+
+    <div class="header-bar">
+        <div class="brand">STA G<span>.</span>F<span>.</span></div>
+        <div class="sys-status">
+            <div class="pulse-dot"></div>
+            <span>Dataset 5560 / 101 Parcels Active</span>
+        </div>
+    </div>
+
+    <!-- The actual viewport capturing scroll -->
+    <div id="viewport">
+        <!-- The container that moves horizontally -->
+        <div id="scroll-container">
+            <!-- Cards injected via JS -->
+        </div>
+    </div>
+
+    <div class="timeline-scrubber">
+        <div class="timeline-head" id="timeline-head"></div>
+    </div>
+
+    <!-- Custom Cursor -->
+    <div id="cursor-dot"></div>
+    <div id="cursor-ring"></div>
+
+    <script>
+        // --- DATA MOCKING --- //
+        const targetParcelData = "5560 002 009";
+        const baseParcelPrefix = "556-002"; // Standardizing format for UI
+        
+        // Pseudo-random deterministic generator based on seed (index)
+        function hash(str) {
+            let h = 0;
+            for(let i = 0; i < str.length; i++) h = Math.imul(31, h) + str.charCodeAt(i) | 0;
+            return Math.abs(h);
+        }
+        
+        function generateData(index) {
+            const isTarget = index === 9; // Target parcel is at index 9 for demo (so 009)
+            const pIdNum = (index).toString().padStart(3, '0');
+            const formattedId = `5560-002-${pIdNum}`;
+            const displayId = `5560 002 ${pIdNum}`;
+            
+            // Deterministic random
+            const rng = hash(formattedId);
+            
+            const zestimate = 850000 + (rng % 150) * 15000;
+            const lastSale = zestimate * (0.6 + ((rng % 30) / 100)); // Sold slightly cheaper depending
+            const sqft = 1800 + (rng % 30) * 100;
+            const lot = sqft * (2 + ((rng % 5)/10));
+            const beds = 3 + (rng % 3);
+            const baths = 2 + (rng % 2);
+            const yearBuilt = 1960 + (rng % 50);
+            const ownerMatchRating = 60 + (rng % 40);
+            
+            // "Gray" data (things usually harder to pull, like signal scores)
+            const likelihoodToSell = 10 + (rng % 85);
+            const permitActivity = ["None", "Low (Remodel)", "High (Addition)", "Med (Roof/HVAC)"][rng % 4];
+
+            return {
+                isTarget,
+                formattedId,
+                displayId,
+                address: `${100 + index} Mockingbird Ln, LA`,
+                owner: isTarget ? "JOHN DOE HOLDINGS LLC" : `OWNER ${String.fromCharCode(65 + (rng % 26))}${rng % 100}`,
+                zestimate: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(zestimate),
+                lastSale: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(lastSale),
+                sqft: new Intl.NumberFormat('en-US').format(sqft),
+                lot: new Intl.NumberFormat('en-US').format(Math.floor(lot)),
+                beds, baths, yearBuilt,
+                likelihoodToSell,
+                permitActivity,
+                ownerMatchRating
+            };
+        }
+
+        // Generate the 100 surrounding, placing target at correct spot
+        // The prompt says "give me the 100 parcels around it".
+        // Let's generate from 001 to 101, so 009 is in there.
+        const parcels = [];
+        for(let i = 1; i <= 101; i++) {
+            parcels.push(generateData(i));
+        }
+
+        // --- DOM RENDER --- //
+        const container = document.getElementById('scroll-container');
+        
+        parcels.forEach((p) => {
+            const card = document.createElement('div');
+            card.className = `parcel-card ${p.isTarget ? 'hero' : ''}`;
+            
+            card.innerHTML = `
+                <div class="card-header">
+                    <div class="tag-row">
+                        <div class="t-id">${p.displayId}</div>
+                        ${p.isTarget ? '<div class="t-badge" style="color:var(--bg-void); background:var(--acc-green);">TARGET</div>' : '<div class="t-badge">NODE</div>'}
+                    </div>
+                    <div class="t-address">${p.address}</div>
+                </div>
+                <div class="card-body">
+                    <div class="data-row">
+                        <span class="d-label">Owner Record</span>
+                        <span class="d-val">${p.owner}</span>
+                    </div>
+                    <div class="data-row">
+                        <span class="d-label">Zestimate (Gray)</span>
+                        <span class="d-val highlight">${p.zestimate}</span>
+                    </div>
+                    <div class="data-row">
+                        <span class="d-label">Last Sale</span>
+                        <span class="d-val">${p.lastSale}</span>
+                    </div>
+                    <div class="data-row" style="border:none; padding-bottom: 0;">
+                        <span class="d-label">Structural</span>
+                        <span class="d-val" style="font-size:0.8rem">${p.beds} BED / ${p.baths} BATH / ${p.sqft} SQFT</span>
+                    </div>
+                    <div class="data-row">
+                        <span class="d-label">Lot Size / Built</span>
+                        <span class="d-val" style="font-size:0.8rem">${p.lot} SQFT / ${p.yearBuilt}</span>
+                    </div>
+                    <div class="data-row">
+                        <span class="d-label">Recent Permits</span>
+                        <span class="d-val" style="font-size:0.8rem">${p.permitActivity}</span>
+                    </div>
+                    
+                    <div style="margin-top:auto">
+                        <div class="data-row" style="border:none">
+                            <span class="d-label">Turnover Likelihood</span>
+                            <span class="d-val">${p.likelihoodToSell}%</span>
+                        </div>
+                        <div class="progress-bar-bg">
+                            <div class="progress-bar-fill" style="transform: scaleX(${p.likelihoodToSell / 100});"></div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            container.appendChild(card);
+            
+            // Wire up hover for cursor
+            card.addEventListener('mouseenter', () => document.body.classList.add('cursor-hover'));
+            card.addEventListener('mouseleave', () => document.body.classList.remove('cursor-hover'));
+        });
+
+        // --- THE HORIZONTAL DRIFT MATRIX (LERP SCROLL) --- //
+        let currentScroll = 0;
+        let targetScroll = 0;
+        const ease = 0.08; // How snappy the lerp is
+
+        // Mouse wheel translates to horizontal offset
+        window.addEventListener('wheel', (e) => {
+            // Check deltaY or deltaX to support both traditional and trackpad scrolling
+            const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+            targetScroll += delta * 1.5; 
+            
+            // Constrain constraints
+            const maxScroll = container.scrollWidth - window.innerWidth;
+            if(targetScroll < 0) targetScroll = 0;
+            if(targetScroll > maxScroll) targetScroll = maxScroll;
+        }, { passive: true });
+
+        // Touch scrolling support (Mobile)
+        let touchStart = 0;
+        window.addEventListener('touchstart', e => { touchStart = e.touches[0].clientX; }, {passive: true});
+        window.addEventListener('touchmove', e => {
+            const touchDelta = touchStart - e.touches[0].clientX;
+            targetScroll += touchDelta * 2;
+            touchStart = e.touches[0].clientX;
+            
+            const maxScroll = container.scrollWidth - window.innerWidth;
+            if(targetScroll < 0) targetScroll = 0;
+            if(targetScroll > maxScroll) targetScroll = maxScroll;
+        }, {passive: true});
+
+
+        const timelineHead = document.getElementById('timeline-head');
+
+        // Animation Loop
+        function renderLoop() {
+            // Lerp mathematical formula: current += (target - current) * ease
+            currentScroll += (targetScroll - currentScroll) * ease;
+            
+            // Apply horizontal translation (GPU accelerated via will-change and transform)
+            container.style.transform = \`translate3d(-\${currentScroll}px, 0, 0)\`;
+
+            // Update scrubber position
+            const maxScroll = container.scrollWidth - window.innerWidth;
+            if(maxScroll > 0) {
+                const progress = currentScroll / maxScroll;
+                timelineHead.style.left = \`\${progress * 100}%\`;
+            }
+
+            requestAnimationFrame(renderLoop);
+        }
+        
+        requestAnimationFrame(renderLoop);
+
+        // --- CURSOR ALCHEMY --- //
+        const cursorDot = document.getElementById('cursor-dot');
+        const cursorRing = document.getElementById('cursor-ring');
+        let mouseX = window.innerWidth / 2;
+        let mouseY = window.innerHeight / 2;
+        let ringX = mouseX;
+        let ringY = mouseY;
+
+        // Immediately track mouse for dot
+        window.addEventListener('mousemove', (e) => {
+            mouseX = e.clientX;
+            mouseY = e.clientY;
+            cursorDot.style.transform = \`translate3d(calc(\${mouseX}px - 50%), calc(\${mouseY}px - 50%), 0)\`;
+        });
+
+        // Lerp loop for the sluggish outer ring
+        function cursorLoop() {
+            ringX += (mouseX - ringX) * 0.15;
+            ringY += (mouseY - ringY) * 0.15;
+            cursorRing.style.transform = \`translate3d(calc(\${ringX}px - 50%), calc(\${ringY}px - 50%), 0)\`;
+            requestAnimationFrame(cursorLoop);
+        }
+        requestAnimationFrame(cursorLoop);
+
+        // --- INTRO SEQUENCE --- //
+        // Snap to target parcel on load
+        window.addEventListener('load', () => {
+            setTimeout(() => {
+                const cards = document.querySelectorAll('.parcel-card');
+                if(cards.length > 8) {
+                    // Navigate such that 009 is around the center-left
+                    const targetLeft = cards[8].offsetLeft;
+                    targetScroll = targetLeft - 80; // slight offset
+                }
+            }, 300);
+        });
+
+    </script>
+</body>
+</html>

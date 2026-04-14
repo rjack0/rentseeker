@@ -1,0 +1,5 @@
+contractor_id,name,city,email_hint,phone_text,notes,parent_parent_id
+1,Robert Smith,Pasadena,robert@example.org,"Call +1 (555) 123-4567","Robert Smith can be reached at robert@example.org for contractor bids and permit follow-up.",P-100
+2,Elizabeth Jones,Santa Monica,,"Phone: +1 555 222 3333","Elizabeth Jones handles scheduling. Alternate email is beth.jones@example.net.",P-200
+3,ACME Roofing LLC,Los Angeles,contact@acmeroofing.com,,"Commercial roofing crew. Website https://acme.example.com.",P-300
+

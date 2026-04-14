@@ -1,0 +1,101 @@
+project:
+  name: phoenix_demo_project
+  entity_type: contractor_record
+
+input:
+  type: csv
+  path: ./data/input/sample_input.csv
+  primary_key: contractor_id
+  schema:
+    contractor_id: string
+    name: string
+    city: string
+    email_hint: string
+    phone_text: string
+    notes: string
+
+scoring:
+  rules:
+    - field: name
+      operator: exists
+      points: 20
+    - field: city
+      operator: exists
+      points: 10
+    - field: notes
+      operator: min_length
+      value: 20
+      points: 15
+  feature_weights:
+    notes: 0.3
+    email_hint: 0.4
+    phone_text: 0.3
+  route_thresholds:
+    full_pipeline: 70
+    core_connectors: 40
+  confidence_weights:
+    identity_match: 35
+    verification_consensus: 25
+    source_diversity: 20
+    signal_quality: 20
+    temporal_freshness: 15
+  tier_thresholds:
+    A: 80
+    B: 60
+
+expansion:
+  max_nodes: 7
+  relationship_expansion_enabled: true
+  variation_rules:
+    name_variations:
+      field: name
+    identifier_aliases: {}
+    temporal_variants:
+      labels: [current, historical]
+
+connectors:
+  - type: graph_traversal
+    config:
+      routes: [full_pipeline, core_connectors]
+  - type: pattern_match
+    config:
+      routes: [full_pipeline, core_connectors]
+      patterns:
+        email: "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"
+        phone: "\\+?\\d[\\d\\-\\(\\)\\s]{7,}\\d"
+  - type: document_parser
+    config:
+      routes: [full_pipeline]
+  - type: web_search
+    config:
+      routes: [full_pipeline]
+      offline_results:
+        "Robert Smith":
+          - url: "https://example.org/robert-smith"
+            title: "Robert Smith Construction"
+            snippet: "Contact Robert Smith at robert@example.org for bids."
+            confidence: 0.84
+  - type: api_lookup
+    config:
+      routes: [full_pipeline]
+      mock_responses:
+        "Robert Smith":
+          company_url: "https://example.org/robert-smith"
+          company_email: "robert@example.org"
+      return_fields:
+        source_url: company_url
+        email: company_email
+
+output:
+  - type: json
+    path: ./results/output.json
+    include_tiers: [A, B, C]
+  - type: csv
+    path: ./results/output.csv
+    include_tiers: [A, B]
+
+runtime:
+  max_recursion_depth: 3
+  recurse_on_confidence: 0.85
+  cache_enabled: true
+

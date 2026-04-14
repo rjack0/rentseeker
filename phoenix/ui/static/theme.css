@@ -1,0 +1,19 @@
+:root {
+  --phoenix-ink: #17212b;
+  --phoenix-accent: #d85f1f;
+  --phoenix-sky: #d8e8f2;
+  --phoenix-warm: #fff6ec;
+}
+
+.stApp {
+  background:
+    radial-gradient(circle at top right, rgba(216, 95, 31, 0.08), transparent 30%),
+    linear-gradient(180deg, #fffdf9 0%, var(--phoenix-warm) 100%);
+  color: var(--phoenix-ink);
+}
+
+h1, h2, h3 {
+  color: var(--phoenix-ink);
+  letter-spacing: -0.02em;
+}
+

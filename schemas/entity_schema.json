@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PhoenixEntity",
+  "type": "object",
+  "required": ["entity_id", "entity_type", "primary_key", "attributes"],
+  "properties": {
+    "entity_id": { "type": "string" },
+    "entity_type": { "type": "string" },
+    "primary_key": { "type": "string" },
+    "attributes": { "type": "object" },
+    "identifiers": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "relationships": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "metadata": { "type": "object" }
+  }
+}
+

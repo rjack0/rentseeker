@@ -1,0 +1,26 @@
+version: "3.9"
+
+services:
+  phoenix:
+    build: .
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: python -m phoenix.cli run --config config/example_project.yaml
+    depends_on:
+      - redis
+
+  ui:
+    build: .
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: streamlit run ui/app.py --server.address=0.0.0.0 --server.port=8501
+    ports:
+      - "8501:8501"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+

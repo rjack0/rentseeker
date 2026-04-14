@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "datagrabberfixer"
+version = "0.1.0"
+description = "Universal data discovery and enrichment platform scaffold."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "OpenAI Codex" }
+]
+dependencies = [
+  "aiohttp>=3.11.0",
+  "duckdb>=1.1.0",
+  "httpx>=0.28.0",
+  "jsonschema>=4.23.0",
+  "networkx>=3.4.0",
+  "openpyxl>=3.1.5",
+  "pandas>=2.2.0",
+  "polars>=1.9.0",
+  "pydantic>=2.9.0",
+  "pyyaml>=6.0.2",
+  "rich>=13.9.0",
+  "streamlit>=1.39.0",
+  "tenacity>=9.0.0",
+  "typer>=0.12.5"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0"
+]
+
+[project.scripts]
+phoenix = "phoenix.cli:app"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+include = ["phoenix*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

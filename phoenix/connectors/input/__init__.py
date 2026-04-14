@@ -1,0 +1,2 @@
+"""Input connector registry."""
+

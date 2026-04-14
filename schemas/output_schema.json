@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PhoenixDiscoveryOutput",
+  "type": "object",
+  "required": ["entity_id", "signal_score", "route"],
+  "properties": {
+    "entity_id": { "type": "string" },
+    "signal_score": { "type": "integer" },
+    "route": { "type": "string" },
+    "nodes": { "type": "array" },
+    "attributes": { "type": "array" },
+    "verifications": { "type": "array" },
+    "confidence": { "type": ["object", "null"] },
+    "exported_to": { "type": "array" },
+    "created_at": { "type": "string" },
+    "errors": { "type": "array" }
+  }
+}
+
