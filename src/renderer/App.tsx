@@ -48,6 +48,7 @@ const bucketKeys = new Set<BucketKey>([
 ])
 
 export function App() {
+  const hasDashboardApi = typeof window !== 'undefined' && Boolean(window.rentSeeker)
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null)
   const [activeBucket, setActiveBucket] = useState<BucketKey>('overview')
   const [bucketData, setBucketData] = useState<BucketDataResponse | null>(null)
@@ -72,11 +73,13 @@ export function App() {
   )
 
   const refreshSnapshot = async () => {
+    if (!hasDashboardApi) return
     const next = await window.rentSeeker.getSnapshot()
     setSnapshot(next)
   }
 
   const loadBucket = async (bucket: BucketKey, nextQuery: QueryRequest) => {
+    if (!hasDashboardApi) return
     setLoading(true)
     try {
       if (bucket === 'query-lab') {
@@ -94,14 +97,17 @@ export function App() {
   }
 
   useEffect(() => {
+    if (!hasDashboardApi) return
     void refreshSnapshot()
-  }, [])
+  }, [hasDashboardApi])
 
   useEffect(() => {
+    if (!hasDashboardApi) return
     void loadBucket(activeBucket, activeQuery)
-  }, [activeBucket, activeQuery])
+  }, [activeBucket, activeQuery, hasDashboardApi])
 
   useEffect(() => {
+    if (!hasDashboardApi) return
     if (
       !selectedEntityId ||
       bucketKeys.has(selectedEntityId as BucketKey) ||
@@ -112,7 +118,7 @@ export function App() {
       return
     }
     void window.rentSeeker.getDossier(selectedEntityId).then(setDossier)
-  }, [selectedEntityId, activeBucket])
+  }, [selectedEntityId, activeBucket, hasDashboardApi])
 
   const activeGraph = queryResult?.graph ?? bucketData?.graph ?? {
     title: 'Connection Workspace',

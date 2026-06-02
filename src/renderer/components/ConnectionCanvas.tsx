@@ -1,17 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArcLayer, ScatterplotLayer } from 'deck.gl'
-import { MapboxOverlay } from '@deck.gl/mapbox'
 import type { Map as MapLibreMap, StyleSpecification } from 'maplibre-gl'
 import maplibregl from 'maplibre-gl'
-import { Protocol } from 'pmtiles'
 
 import type { ConnectionGraph } from '@shared/types'
 import { buildSpatialCollections } from '@renderer/lib/workbench'
 
-const protocol = new Protocol()
-if (!(window as { __pmtiles_registered__?: boolean }).__pmtiles_registered__) {
-  maplibregl.addProtocol('pmtiles', protocol.tile)
-  ;(window as { __pmtiles_registered__?: boolean }).__pmtiles_registered__ = true
+// deck.gl loaded from CDN at runtime (to avoid vite 8/rolldown MISSING_EXPORT errors)
+const DECKGL_CDN = 'https://unpkg.com/deck.gl@9.0.38/dist.min.js'
+let deckLoadPromise: Promise<boolean> | null = null
+function loadDeckGL(): Promise<boolean> {
+  if (deckLoadPromise) return deckLoadPromise
+  if ((window as any).deck) return Promise.resolve(true)
+  deckLoadPromise = new Promise((resolve) => {
+    const script = document.createElement('script')
+    script.src = DECKGL_CDN
+    script.async = true
+    script.onload = () => resolve(true)
+    script.onerror = () => resolve(false)
+    document.head.appendChild(script)
+  })
+  return deckLoadPromise
 }
 
 const LOCAL_STYLE: StyleSpecification = {
@@ -78,7 +86,7 @@ function SpatialLens({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
-  const overlayRef = useRef<MapboxOverlay | null>(null)
+  const overlayRef = useRef<any>(null)
   const { pointFeatures, lineFeatures, nodeData, arcData } = useMemo(
     () => buildSpatialCollections(graph, selectedId),
     [graph, selectedId]
@@ -98,17 +106,23 @@ function SpatialLens({
       attributionControl: false
     })
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
-    const overlay = new MapboxOverlay({
-      interleaved: false,
-      layers: []
-    })
-    map.addControl(overlay)
-    overlayRef.current = overlay
+    const initDeck = async () => {
+      const loaded = await loadDeckGL()
+      if (!loaded || !(window as any).deck) return
+      const deckgl = (window as any).deck
+      const overlay = new deckgl.MapboxOverlay({
+        interleaved: false,
+        layers: []
+      })
+      map.addControl(overlay)
+      overlayRef.current = overlay
+    }
+    void initDeck()
 
     mapRef.current = map
 
     return () => {
-      overlay.finalize()
+      overlayRef.current?.finalize?.()
       overlayRef.current = null
       map.remove()
       mapRef.current = null
@@ -122,32 +136,32 @@ function SpatialLens({
     }
 
     overlay.setProps({
-      getCursor: ({ isHovering }) => (isHovering ? 'pointer' : 'grab'),
+      getCursor: ({ isHovering }: any) => (isHovering ? 'pointer' : 'grab'),
       layers: [
-        new ArcLayer({
+        new ((window as any).deck.ArcLayer)({
           id: 'spatial-arc-layer',
           data: arcData,
           pickable: false,
-          getSourcePosition: (item) => item.sourcePosition,
-          getTargetPosition: (item) => item.targetPosition,
-          getWidth: (item) => Math.max(1, item.strength * 1.4),
+          getSourcePosition: (item: any) => item.sourcePosition,
+          getTargetPosition: (item: any) => item.targetPosition,
+          getWidth: (item: any) => Math.max(1, item.strength * 1.4),
           getSourceColor: [255, 138, 61, 150],
           getTargetColor: [115, 194, 251, 180],
           greatCircle: false
         }),
-        new ScatterplotLayer({
+        new ((window as any).deck.ScatterplotLayer)({
           id: 'spatial-node-layer',
           data: nodeData,
           pickable: true,
           stroked: true,
           filled: true,
           radiusUnits: 'pixels',
-          getPosition: (item) => item.position,
-          getRadius: (item) => 8 + Math.min(14, item.weight),
-          getFillColor: (item) => (item.selected ? [255, 207, 92, 230] : [115, 194, 251, 210]),
+          getPosition: (item: any) => item.position,
+          getRadius: (item: any) => 8 + Math.min(14, item.weight),
+          getFillColor: (item: any) => (item.selected ? [255, 207, 92, 230] : [115, 194, 251, 210]),
           getLineColor: [8, 17, 26, 255],
           getLineWidth: 2,
-          onClick: (info) => {
+          onClick: (info: any) => {
             if (info.object) {
               onSelect((info.object as { id: string }).id)
             }

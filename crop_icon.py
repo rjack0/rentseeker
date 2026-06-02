@@ -10,8 +10,8 @@ def process(img_path, out_path):
     mask = Image.new("L", (w, h), 0)
     draw = ImageDraw.Draw(mask)
     
-    # Calculate macOS exact squircle radius (22.5%)
-    r = int(w * 0.225)
+    # Increase macOS exact squircle radius visually to 26% for a smoother Pillow approximation
+    r = int(w * 0.26)
     
     # Paint solid white on the mask in the rounded shape
     draw.rounded_rectangle((0, 0, w, h), radius=r, fill=255)

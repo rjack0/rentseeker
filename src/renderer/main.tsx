@@ -7,10 +7,10 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { App } from './App'
 import './styles.css'
 import './parcel-explorer.css'
+import './loading-owner-analytics.css'
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
     <App />
   </React.StrictMode>
 )
-

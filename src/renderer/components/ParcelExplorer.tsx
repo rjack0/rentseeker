@@ -1,29 +1,54 @@
 /**
- * ParcelExplorer — Map-Centric Industrial Theatre
+ * ParcelExplorer — Map-Centric Industrial Theatre v2
  *
- * Architecture:
+ * Phase 2 Architecture:
  *   - Full-screen dark map (MapLibre GL + CartoDB Dark Matter tiles)
- *   - Parcel markers plotted by lat/lng with target pulse effects
+ *   - GeoJSON source + circle layers for perfectly synced markers
+ *   - Multi-dataset cross-referencing (Parcel + Certificate of Occupancy)
+ *   - Smart FilterBar with APN prefix, value range, C-of-O, draw-a-boundary
  *   - Bottom horizontal strip of compact parcel cards
- *   - Right sidebar dossier panel showing full 51-column detail
- *   - Glassmorphic header with search and status
- *   - Custom cursor system
+ *   - Right sidebar dossier panel with C-of-O data
+ *   - Dataset legend with color-coded toggles
+ *   - Google 3D Photorealistic Tiles toggle (deck.gl)
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import type { ParcelRecord, ParcelQueryResult } from '@shared/types'
+import type { Geometry } from 'geojson'
+import type {
+  ParcelRecord,
+  ParcelQueryResult,
+  ParcelFilterQuery,
+  DataSource,
+  TerrainMetrics,
+  TerrainMetricsResponse,
+  SunAnalysis,
+  SunAnalysisResponse,
+  ParcelPolygon,
+  DataLoadProgress,
+  DataLoadStep,
+  ParcelPmtilesInfo,
+  BuildRunOutput,
+  MapBounds,
+  ParcelSelectionMode,
+  HeatMapCell
+} from '@shared/types'
+import { useDeck3DOverlay, Toggle3DButton, ClayModeToggle, SlopeTooltip } from './Deck3DOverlay'
+import { SunOverlay, SunToggleButton } from './SunOverlay'
+import { ViewOverlay, ViewToggleButton } from './ViewOverlay'
+import { BuildPanel, BuildToggleButton } from './BuildPanel'
+import { OwnerPanel } from './OwnerPanel'
+import { AnalyticsSuite, AnalyticsToggleButton } from './AnalyticsSuite'
+import { LoadingCinema } from './LoadingCinema'
+import { PropstreamGridPanel } from './PropstreamGridPanel'
 
 /* ═══════════════════════════════════════════════════════════
    CONSTANTS
    ═══════════════════════════════════════════════════════════ */
 
-const CSV_PATH = '/Users/rjack/Desktop/almanac/Docs/Parcel_Data_0 2.csv'
 const TARGET_PARCELS = '5560002009, 5560003013, 5556007007, 5556028011'
-const MAX_SURROUNDING = 100
 
-// CartoDB Dark Matter — perfect for industrial aesthetic
 const MAP_STYLE = {
   version: 8 as const,
   name: 'Dark Matter',
@@ -50,9 +75,162 @@ const MAP_STYLE = {
   ]
 }
 
-// Default center: Los Angeles
 const LA_CENTER: [number, number] = [-118.25, 34.05]
-const DEFAULT_ZOOM = 12
+
+// Default startup: Golden Triangle (Beverly Hills), zoomed-in so PMTiles parcel boundaries
+// only need to load the on-screen neighborhood (not a huge swath of LA).
+// Start very zoomed in so the initial parcel-boundary render stays in the low-thousands.
+// Note: PMTiles maxZoom is 15; MapLibre overzooms (reuses z15 tiles) for z>15 which still
+// reduces the viewport area and therefore visible parcel count.
+// Calibrated so the initial viewport stays under the ~2.5k parcel boundary target.
+const DEFAULT_ZOOM = 17.7
+const SANTA_MONICA_MOUNTAINS_CENTER: [number, number] = [-118.4057, 34.0676]
+
+const PMTILES_ARCHIVE_KEY = 'lacounty-parcels'
+const PMTILES_VECTOR_SOURCE_ID = 'parcel-boundaries-vt'
+const PMTILES_VECTOR_LAYER_ID = 'parcels'
+const PMTILES_LINE_LAYER_ID = 'parcel-boundaries-line'
+const PMTILES_FILL_LAYER_ID = 'parcel-boundaries-fill'
+const PARCEL_BOUNDARY_RENDER_MIN_ZOOM = 15
+const MAX_VISIBLE_PARCEL_BOUNDARIES = 2500
+
+const DATASET_COLORS = {
+  parcel: '#00d4ff',
+  sbf: '#ffde59',
+  cofo: '#ff7a45',
+  building: '#a78bfa',
+  electrical: '#34d399',
+  submitted: '#f472b6',
+  inspection: '#94a3b8',
+  polygon: '#abff02',
+  both: '#abff02',
+  target: '#abff02',
+  selected: '#ffffff'
+}
+
+interface VisualSettings {
+  showDots: boolean
+  showPolygonFill: boolean
+  streetClearEdges: boolean
+  lineStrength: number
+  datasetColorDots: boolean
+  showTopoOverlay: boolean
+  showHeatOverlay: boolean
+  showPmtilesInspector: boolean
+}
+
+const DEFAULT_VISUAL_SETTINGS: VisualSettings = {
+  showDots: true,
+  showPolygonFill: false,
+  streetClearEdges: true,
+  lineStrength: 1,
+  datasetColorDots: true,
+  showTopoOverlay: false,
+  showHeatOverlay: false,
+  showPmtilesInspector: false
+}
+
+const MAP_STATE_KEY = 'rentseeker.mapState'
+
+function getSavedMapState(): { center: [number, number]; zoom: number; bounds?: { north: number; south: number; east: number; west: number } } | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(MAP_STATE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { center?: [number, number]; zoom?: number; bounds?: { north: number; south: number; east: number; west: number } }
+    if (!parsed.center || typeof parsed.zoom !== 'number') return null
+    // Ensure we don't restore to a zoom where parcel boundary layers are disabled.
+    const zoom = Math.max(parsed.zoom, PARCEL_BOUNDARY_RENDER_MIN_ZOOM)
+    return { center: parsed.center, zoom, bounds: parsed.bounds }
+  } catch {
+    return null
+  }
+}
+
+function saveMapState(map: maplibregl.Map) {
+  try {
+    const center = map.getCenter()
+    const bounds = map.getBounds()
+    window.localStorage.setItem(MAP_STATE_KEY, JSON.stringify({
+      center: [center.lng, center.lat],
+      zoom: map.getZoom(),
+      bounds: {
+        north: bounds.getNorth(),
+        south: bounds.getSouth(),
+        east: bounds.getEast(),
+        west: bounds.getWest()
+      }
+    }))
+  } catch {
+    // localStorage can be disabled in hardened contexts.
+  }
+}
+
+function lngLatToTile(lng: number, lat: number, z: number): { x: number; y: number } {
+  const n = Math.pow(2, z)
+  const x = Math.floor(((lng + 180) / 360) * n)
+  const latRad = (lat * Math.PI) / 180
+  const y = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n)
+  return { x, y }
+}
+
+function ensurePmtilesProtocolRegistered() {
+  if (typeof window === 'undefined') return
+  const w = window as unknown as {
+    __rentseeker_pmtiles_protocol__?: boolean
+    __rentseeker_pmtiles_first_tile__?: boolean
+    __rentseeker_pmtiles_stats__?: { tiles: number; totalMs: number; lastMs: number }
+    rentSeeker?: any
+  }
+  if (w.__rentseeker_pmtiles_protocol__) return
+  if (!w.rentSeeker?.getParcelPmtilesTile) {
+    // Desktop API not ready yet; try again shortly.
+    window.setTimeout(() => ensurePmtilesProtocolRegistered(), 250)
+    return
+  }
+  maplibregl.addProtocol('pmtiles', async (params: any, abortController: AbortController) => {
+    const url: string = params?.url ?? ''
+    const match = url.match(/^pmtiles:\/\/([^/]+)\/(\d+)\/(\d+)\/(\d+)(?:\.[a-z0-9]+)?$/i)
+    if (!match) {
+      throw new Error(`Invalid pmtiles url: ${url}`)
+    }
+    const key = match[1]
+    if (key !== PMTILES_ARCHIVE_KEY) {
+      throw new Error(`Unknown pmtiles archive key: ${key}`)
+    }
+    const z = Number(match[2])
+    const x = Number(match[3])
+    const y = Number(match[4])
+    const t0 = performance.now()
+    const tile = await w.rentSeeker.getParcelPmtilesTile(z, x, y)
+    const dt = Math.max(0, performance.now() - t0)
+    const stats = w.__rentseeker_pmtiles_stats__ ?? { tiles: 0, totalMs: 0, lastMs: 0 }
+    stats.tiles += 1
+    stats.totalMs += dt
+    stats.lastMs = dt
+    w.__rentseeker_pmtiles_stats__ = stats
+    try { window.dispatchEvent(new CustomEvent('rentseeker:pmtiles:stats', { detail: stats })) } catch { /* ignore */ }
+    abortController.signal?.throwIfAborted?.()
+    if (!tile) return { data: null }
+    // MapLibre expects an (uncompressed) pbf for vector tiles.
+    const bytes = tile instanceof Uint8Array ? tile : new Uint8Array(tile)
+    const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+    if (!w.__rentseeker_pmtiles_first_tile__) {
+      w.__rentseeker_pmtiles_first_tile__ = true
+      try { window.dispatchEvent(new CustomEvent('rentseeker:pmtiles:first-tile')) } catch { /* ignore */ }
+    }
+    return { data: buf }
+  })
+  w.__rentseeker_pmtiles_protocol__ = true
+}
+
+function getMapLibreProtocol(): boolean {
+  try {
+    return typeof (maplibregl as any).getProtocol === 'function'
+  } catch {
+    return false
+  }
+}
 
 /* ═══════════════════════════════════════════════════════════
    FORMATTERS
@@ -61,49 +239,652 @@ const DEFAULT_ZOOM = 12
 function formatCurrency(value: number): string {
   if (value === 0) return '—'
   return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 0
+    style: 'currency', currency: 'USD', maximumFractionDigits: 0
   }).format(value)
 }
-
 function formatNumber(value: number): string {
   if (value === 0) return '—'
   return new Intl.NumberFormat('en-US').format(value)
 }
-
 function formatAddress(parcel: ParcelRecord): string {
-  if (parcel.propertyLocation && parcel.propertyLocation.trim()) {
-    return parcel.propertyLocation
-  }
+  if (parcel.propertyLocation?.trim()) return parcel.propertyLocation
   const parts = [
-    parcel.addressHouseNumber,
-    parcel.addressHouseNumberFraction,
-    parcel.direction,
-    parcel.street,
-    parcel.unitNumber ? `#${parcel.unitNumber}` : '',
-    parcel.city
+    parcel.addressHouseNumber, parcel.addressHouseNumberFraction,
+    parcel.direction, parcel.street,
+    parcel.unitNumber ? `#${parcel.unitNumber}` : '', parcel.city
   ].filter(Boolean)
   return parts.length > 0 ? parts.join(' ') : 'No address on record'
 }
-
 function formatCoord(val: number | null): string {
-  if (val === null || val === undefined) return '—'
+  if (val == null) return '—'
   return val.toFixed(6)
 }
-
+function formatCompact(value: number): string {
+  if (!value) return '—'
+  return new Intl.NumberFormat('en-US', {
+    notation: 'compact',
+    maximumFractionDigits: value >= 1000000 ? 1 : 0
+  }).format(value)
+}
 function normalizeParcelDisplay(assessorId: string): string {
   return assessorId.replace(/-/g, ' ')
 }
 
+function formatMatchKey(parcel: ParcelRecord): string {
+  return parcel.ain || parcel.assessorId.replace(/[^0-9]/g, '')
+}
+
+function parcelRecordKeys(parcel: ParcelRecord): string[] {
+  return [...new Set([
+    parcel.ain,
+    parcel.assessorId,
+    parcel.assessorId?.replace(/[^0-9]/g, '')
+  ].filter(Boolean))]
+}
+
+function parcelPolygonKeys(parcel: ParcelPolygon): string[] {
+  return [...new Set([
+    parcel.ain,
+    parcel.apn,
+    parcel.apn?.replace(/[^0-9]/g, '')
+  ].filter(Boolean))]
+}
+
+function mergeParcelIntoResult(result: ParcelQueryResult | null, parcel: ParcelRecord): ParcelQueryResult | null {
+  if (!result) return result
+  const alreadyPresent = result.allParcels.some(item => item.assessorId === parcel.assessorId)
+  if (alreadyPresent) return result
+  return {
+    ...result,
+    allParcels: [parcel, ...result.allParcels],
+    surroundingParcels: [parcel, ...result.surroundingParcels],
+    returnedCount: (result.returnedCount ?? result.allParcels.length) + 1
+  }
+}
+
+function parcelVisualSource(parcel: ParcelRecord): string {
+  const sources = new Set(parcel.dataSources ?? [])
+  if (parcel.dataSource === 'both' || sources.has('cofo')) return 'cofo'
+  if (sources.has('building_permit')) return 'building'
+  if (sources.has('electrical_permit')) return 'electrical'
+  if (sources.has('building_permit_submitted')) return 'submitted'
+  if (sources.has('inspection')) return 'inspection'
+  return parcel.dataSource ?? 'parcel'
+}
+
+type FactProvenance = {
+  datasetName: string
+  sourceFields: string[]
+  matchKey: string
+  normalizations: string[]
+  confidence: 'High' | 'Medium-High' | 'Medium' | 'Low'
+  notes?: string
+}
+
+function sourceForFact(label: string, parcel: ParcelRecord): FactProvenance {
+  const matchKey = `AIN/APN ${formatMatchKey(parcel)}`
+  const lower = label.toLowerCase()
+
+  // Derived / computed metrics
+  if (lower.includes('geometric') || lower.includes('neighbor median') || lower.includes('sqft check')) {
+    return {
+      datasetName: 'Derived: Parcel polygon sqft check',
+      sourceFields: ['PMTiles parcels geometry (AIN)', 'Assessor Parcels: "Square Footage"'],
+      matchKey,
+      normalizations: ['AIN digits normalization', 'Polygon area computed in WebMercator; neighbors median from parcel polygons in expanded bounds'],
+      confidence: 'Medium-High',
+      notes: 'Computed and persisted in parcel_master: geometric_sqft, neighbor_median_sqft, sqft_check_status.'
+    }
+  }
+
+  if (lower.includes('slope') || lower.includes('relief') || lower.includes('aspect') || lower.includes('terrain')) {
+    return {
+      datasetName: 'Derived: Terrain engine',
+      sourceFields: ['Terrain samples (elevation grid) clipped to parcel polygon when available'],
+      matchKey,
+      normalizations: ['Parcel polygon used when available; otherwise centroid sampling'],
+      confidence: 'Medium',
+      notes: 'If elevation sampling fails, UI shows “not computed”.'
+    }
+  }
+
+  if (lower.includes('sun')) {
+    return {
+      datasetName: 'Derived: Sun simulator',
+      sourceFields: ['NOAA-style solar position math', 'Terrain elevation sampling for obstruction checks'],
+      matchKey,
+      normalizations: ['Date/season normalized to YYYY-MM-DD', 'Ray obstruction sampled at fixed distances'],
+      confidence: 'Medium',
+      notes: 'Persisted in parcel_sun_analysis; if elevation sampling fails, shows “not computed”.'
+    }
+  }
+
+  if (lower.includes('view')) {
+    return {
+      datasetName: 'Derived: View analysis',
+      sourceFields: ['Terrain elevation sampling', 'Landmark catalog'],
+      matchKey,
+      normalizations: ['Stories -> viewer height conversion', '360-degree ray sweep'],
+      confidence: 'Medium',
+      notes: 'Persisted in parcel_view_analysis; missing signals show “not computed”.'
+    }
+  }
+
+  // Certificate of Occupancy
+  if (lower.includes('cofo') || lower.includes('issue date') || lower.includes('permit type') || lower.includes('sub-type') || lower.includes('contractor') || lower.includes('stories') || lower.includes('zone') || lower.includes('work description') || lower.includes('valuation')) {
+    const fieldMap: Record<string, string> = {
+      'cofo number': 'cofo_number',
+      'issue date': 'issue_date',
+      'status': 'status',
+      'permit type': 'permit_type',
+      'sub-type': 'permit_sub_type',
+      'work description': 'work_description',
+      'valuation': 'valuation',
+      'zone': 'zone',
+      'stories': 'number_of_stories',
+      'contractor': 'contractor_name'
+    }
+    const key = lower
+    const sourceField = fieldMap[key] ?? label
+    return {
+      datasetName: 'Certificate of Occupancy',
+      sourceFields: [sourceField],
+      matchKey,
+      normalizations: ['Assessor book/page/parcel normalized', 'APN digits normalization'],
+      confidence: 'High'
+    }
+  }
+
+  // Permits / inspections
+  if (lower.includes('building permit') || lower.includes('electrical permit') || lower.includes('submitted') || lower.includes('inspection')) {
+    const src = lower.includes('electrical') ? 'Electrical Permits 2020+'
+      : lower.includes('submitted') ? 'Building Permits Submitted'
+      : lower.includes('inspection') ? 'Inspections'
+      : 'Building Permits 2020+'
+
+    const fields = lower.includes('count')
+      ? ['apn', 'permit_nbr', 'issue_date']
+      : lower.includes('status')
+        ? ['status_desc']
+        : lower.includes('work')
+          ? ['work_desc']
+          : lower.includes('valuation')
+            ? ['valuation']
+            : ['permit_nbr']
+
+    return {
+      datasetName: src,
+      sourceFields: fields,
+      matchKey,
+      normalizations: ['APN digits normalization (remove hyphens)', 'Permit numbers aggregated per APN; inspections joined by permit number'],
+      confidence: 'Medium-High'
+    }
+  }
+
+  // Assessor parcel file (base)
+  const assessorFieldMap: Record<string, string> = {
+    'total value': '"Total Value"',
+    'taxable value': '"Taxable Value"',
+    'land value': '"Land Value"',
+    'improvement value': '"Improvement Value"',
+    'sqft': '"Square Footage"',
+    'year built': '"Year Built"',
+    'bedrooms': '"Number of Bedrooms"',
+    'bathrooms': '"Number of Bathrooms"',
+    'units': '"Number of Units"',
+    'recording date': '"Recording Date"',
+    'property location': '"Property Location"',
+    'legal description': '"Parcel Legal Description"',
+    'classification': '"Classification"',
+    'region #': '"Region Number"',
+    'cluster code': '"Cluster Code"'
+  }
+  const srcField = assessorFieldMap[lower] ?? label
+  return {
+    datasetName: 'LA County Assessor Parcels',
+    sourceFields: [srcField],
+    matchKey,
+    normalizations: ['AIN/APN digits normalization', 'Latest roll year per Assessor ID'],
+    confidence: 'High'
+  }
+}
+
+function lineGeometryForPolygon(geometry: Geometry, streetClearEdges: boolean): Geometry {
+  if (!streetClearEdges) return geometry
+
+  const ringToLine = (ring: number[][]): number[][] => {
+    if (ring.length <= 3) return ring
+    let longestIndex = -1
+    let longestDistance = -1
+    for (let i = 0; i < ring.length - 1; i++) {
+      const [x1, y1] = ring[i]
+      const [x2, y2] = ring[i + 1]
+      const distance = Math.hypot(x2 - x1, y2 - y1)
+      if (distance > longestDistance) {
+        longestDistance = distance
+        longestIndex = i
+      }
+    }
+    return ring.filter((_, index) => index !== longestIndex + 1)
+  }
+
+  if (geometry.type === 'Polygon') {
+    return {
+      type: 'MultiLineString',
+      coordinates: geometry.coordinates.map(ring => ringToLine(ring as number[][]))
+    }
+  }
+  if (geometry.type === 'MultiPolygon') {
+    return {
+      type: 'MultiLineString',
+      coordinates: geometry.coordinates.flatMap(poly => poly.map(ring => ringToLine(ring as number[][])))
+    }
+  }
+  return geometry
+}
+
 /* ═══════════════════════════════════════════════════════════
-   COMPACT PARCEL CARD (Bottom Bar)
+   FILTER BAR
+   ═══════════════════════════════════════════════════════════ */
+
+interface FilterBarProps {
+  filter: ParcelFilterQuery
+  onFilterChange: (filter: ParcelFilterQuery) => void
+  onDrawBoundary: () => void
+  isDrawing: boolean
+  resultCount: number
+  queryTimeMs: number
+}
+
+function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCount, queryTimeMs }: FilterBarProps) {
+  const [localApn, setLocalApn] = useState(filter.apnPrefix ?? '')
+  const [localSearch, setLocalSearch] = useState(filter.searchText ?? '')
+  const [localValueMin, setLocalValueMin] = useState(filter.valueMin?.toString() ?? '')
+  const [localValueMax, setLocalValueMax] = useState(filter.valueMax?.toString() ?? '')
+
+  const applyFilter = useCallback((patch: Partial<ParcelFilterQuery>) => {
+    onFilterChange({ ...filter, ...patch })
+  }, [filter, onFilterChange])
+
+  return (
+    <div className="pe-filter-bar">
+      <div className="pe-filter-section">
+        {/* APN Prefix */}
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">APN BOOK</label>
+          <input
+            className="pe-filter-input small"
+            placeholder="5560"
+            maxLength={4}
+            value={localApn}
+            onChange={e => setLocalApn(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ apnPrefix: localApn || undefined })}
+            onBlur={() => applyFilter({ apnPrefix: localApn || undefined })}
+          />
+        </div>
+
+        {/* Free text */}
+        <div className="pe-filter-group wide">
+          <label className="pe-filter-label">SEARCH</label>
+          <input
+            className="pe-filter-input"
+            placeholder="Address, APN, legal desc…"
+            value={localSearch}
+            onChange={e => setLocalSearch(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ searchText: localSearch || undefined })}
+            onBlur={() => applyFilter({ searchText: localSearch || undefined })}
+          />
+        </div>
+
+        {/* Value Range */}
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">MIN VALUE</label>
+          <input
+            className="pe-filter-input small"
+            placeholder="$0"
+            value={localValueMin}
+            onChange={e => setLocalValueMin(e.target.value.replace(/[^0-9]/g, ''))}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ valueMin: localValueMin ? Number(localValueMin) : undefined })}
+            onBlur={() => applyFilter({ valueMin: localValueMin ? Number(localValueMin) : undefined })}
+          />
+        </div>
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">MAX VALUE</label>
+          <input
+            className="pe-filter-input small"
+            placeholder="∞"
+            value={localValueMax}
+            onChange={e => setLocalValueMax(e.target.value.replace(/[^0-9]/g, ''))}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ valueMax: localValueMax ? Number(localValueMax) : undefined })}
+            onBlur={() => applyFilter({ valueMax: localValueMax ? Number(localValueMax) : undefined })}
+          />
+        </div>
+
+        {/* C-of-O Toggle */}
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">C-of-O</label>
+          <button
+            className={`pe-filter-toggle ${filter.hasCofO ? 'active' : ''}`}
+            onClick={() => applyFilter({ hasCofO: !filter.hasCofO })}
+          >
+            {filter.hasCofO ? 'YES' : 'ALL'}
+          </button>
+        </div>
+
+        {/* Use Type */}
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">USE TYPE</label>
+          <select
+            className="pe-filter-select"
+            value={filter.useType ?? ''}
+            onChange={e => applyFilter({ useType: e.target.value || undefined })}
+          >
+            <option value="">All</option>
+            <option value="SFR">SFR</option>
+            <option value="Commercial">Commercial</option>
+            <option value="Multi-Family Residence">Multi-Family</option>
+            <option value="Condominium">Condo</option>
+            <option value="Vacant">Vacant</option>
+            <option value="Industrial">Industrial</option>
+          </select>
+        </div>
+
+        {/* Sort */}
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">SORT BY</label>
+          <select
+            className="pe-filter-select"
+            value={filter.sortField ?? 'assessorId'}
+            onChange={e => applyFilter({ sortField: e.target.value })}
+          >
+            <option value="assessorId">APN</option>
+            <option value="totalValue">Total Value</option>
+            <option value="squareFootage">SQFT</option>
+            <option value="yearBuilt">Year Built</option>
+            <option value="taxableValue">Taxable</option>
+            <option value="landValue">Land Value</option>
+          </select>
+          <button
+            className="pe-filter-sort-dir"
+            onClick={() => applyFilter({ sortDir: filter.sortDir === 'desc' ? 'asc' : 'desc' })}
+            title={filter.sortDir === 'desc' ? 'Descending' : 'Ascending'}
+          >
+            {filter.sortDir === 'desc' ? '↓' : '↑'}
+          </button>
+        </div>
+
+        {/* Draw Boundary */}
+        <button
+          className={`pe-filter-draw-btn ${isDrawing ? 'active' : ''}`}
+          onClick={onDrawBoundary}
+        >
+          {isDrawing ? '✕ CANCEL' : '◻ SELECT AREA'}
+        </button>
+      </div>
+
+      {/* Active filter pills */}
+      <div className="pe-filter-pills">
+        {filter.apnPrefix && (
+          <span className="pe-pill">Book: {filter.apnPrefix} <button onClick={() => { setLocalApn(''); applyFilter({ apnPrefix: undefined }) }}>×</button></span>
+        )}
+        {filter.valueMin != null && (
+          <span className="pe-pill">≥ {formatCurrency(filter.valueMin)} <button onClick={() => { setLocalValueMin(''); applyFilter({ valueMin: undefined }) }}>×</button></span>
+        )}
+        {filter.valueMax != null && (
+          <span className="pe-pill">≤ {formatCurrency(filter.valueMax)} <button onClick={() => { setLocalValueMax(''); applyFilter({ valueMax: undefined }) }}>×</button></span>
+        )}
+        {filter.hasCofO && (
+          <span className="pe-pill cofo">C-of-O Only <button onClick={() => applyFilter({ hasCofO: false })}>×</button></span>
+        )}
+        {filter.useType && (
+          <span className="pe-pill">{filter.useType} <button onClick={() => applyFilter({ useType: undefined })}>×</button></span>
+        )}
+        {filter.searchText && (
+          <span className="pe-pill">"{filter.searchText}" <button onClick={() => { setLocalSearch(''); applyFilter({ searchText: undefined }) }}>×</button></span>
+        )}
+        {filter.bounds && (
+          <span className="pe-pill boundary">Boundary Active <button onClick={() => applyFilter({ bounds: undefined })}>×</button></span>
+        )}
+        <span className="pe-filter-result-count">
+          {resultCount.toLocaleString()} matched records · {queryTimeMs}ms
+        </span>
+      </div>
+    </div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
+   DATASET LEGEND
+   ═══════════════════════════════════════════════════════════ */
+
+interface DatasetLegendProps {
+  showCofO: boolean
+  onToggleCofO: (v: boolean) => void
+  showBuilding: boolean
+  onToggleBuilding: (v: boolean) => void
+  showElectrical: boolean
+  onToggleElectrical: (v: boolean) => void
+  showSubmitted: boolean
+  onToggleSubmitted: (v: boolean) => void
+  showInspections: boolean
+  onToggleInspections: (v: boolean) => void
+  showPolygons: boolean
+  onTogglePolygons: (v: boolean) => void
+  parcelCount: number
+  ownerCount: number
+  cofOCount: number
+  bothCount: number
+  buildingPermitCount: number
+  electricalPermitCount: number
+  submittedPermitCount: number
+  inspectionCount: number
+  datasetTotals: Record<string, number>
+  manifestSteps: DataLoadStep[]
+}
+
+function DatasetLegend({
+  showCofO,
+  onToggleCofO,
+  showBuilding,
+  onToggleBuilding,
+  showElectrical,
+  onToggleElectrical,
+  showSubmitted,
+  onToggleSubmitted,
+  showInspections,
+  onToggleInspections,
+  showPolygons,
+  onTogglePolygons,
+  parcelCount,
+  ownerCount,
+  cofOCount,
+  bothCount,
+  buildingPermitCount,
+  electricalPermitCount,
+  submittedPermitCount,
+  inspectionCount,
+  datasetTotals,
+  manifestSteps
+}: DatasetLegendProps) {
+  const sampled = (count: number, totalKey: string, fallbackKey?: string) => {
+    const total = datasetTotals[totalKey] ?? (fallbackKey ? datasetTotals[fallbackKey] : 0) ?? 0
+    return total ? `${count.toLocaleString()} / ${formatCompact(total)}` : count.toLocaleString()
+  }
+
+  const rowForDataset = (name: string): { countText: string; toggle?: { checked: boolean; onChange: (v: boolean) => void } } => {
+    const lower = name.toLowerCase()
+    if (lower.includes('certificate of occupancy')) {
+      return { countText: sampled(cofOCount, name), toggle: { checked: showCofO, onChange: onToggleCofO } }
+    }
+    if (lower.includes('building permits submitted')) {
+      return { countText: sampled(submittedPermitCount, name), toggle: { checked: showSubmitted, onChange: onToggleSubmitted } }
+    }
+    if (lower.includes('building permits')) {
+      return { countText: sampled(buildingPermitCount, name), toggle: { checked: showBuilding, onChange: onToggleBuilding } }
+    }
+    if (lower.includes('electrical permits')) {
+      return { countText: sampled(electricalPermitCount, name), toggle: { checked: showElectrical, onChange: onToggleElectrical } }
+    }
+    if (lower.includes('inspections')) {
+      return { countText: sampled(inspectionCount, name), toggle: { checked: showInspections, onChange: onToggleInspections } }
+    }
+    if (lower.includes('secured basic file') || lower.includes('(sbf)')) {
+      return { countText: sampled(ownerCount, name, 'Owner Records (SBF)') }
+    }
+    if (lower.includes('assessor parcels')) {
+      return { countText: sampled(parcelCount, name) }
+    }
+    if (lower.includes('parcel boundary') || lower.includes('pmtiles')) {
+      const total = datasetTotals[name] ?? datasetTotals['Parcel Boundary Lines'] ?? datasetTotals['Parcel Polygons'] ?? 0
+      return { countText: formatCompact(total), toggle: { checked: showPolygons, onChange: onTogglePolygons } }
+    }
+    const total = datasetTotals[name] ?? 0
+    return { countText: total ? formatCompact(total) : '—' }
+  }
+
+  return (
+    <div className="pe-legend">
+      <div className="pe-legend-title">DATASETS</div>
+      {manifestSteps.map((step) => {
+        const info = rowForDataset(step.datasetName)
+        return (
+          <div key={step.datasetName} className="pe-legend-row">
+            <div className="pe-legend-dot" style={{ background: step.color || DATASET_COLORS.parcel }} />
+            <span>{step.datasetName}</span>
+            {info.toggle && (
+              <label className="pe-legend-toggle">
+                <input type="checkbox" checked={info.toggle.checked} onChange={e => info.toggle!.onChange(e.target.checked)} />
+                <span className="pe-legend-toggle-track" />
+              </label>
+            )}
+            <span className="pe-legend-count">{info.countText}</span>
+          </div>
+        )
+      })}
+      <div className="pe-legend-row">
+        <div className="pe-legend-dot" style={{ background: DATASET_COLORS.both }} />
+        <span>Cross-Referenced</span>
+        <span className="pe-legend-count">{bothCount}</span>
+      </div>
+    </div>
+  )
+}
+
+function VisualSettingsMenu({
+  settings,
+  onChange,
+  onClose,
+  pmtilesInfo,
+  pmtilesSourceLayer,
+  pmtilesReady
+}: {
+  settings: VisualSettings
+  onChange: (settings: VisualSettings) => void
+  onClose: () => void
+  pmtilesInfo: ParcelPmtilesInfo | null
+  pmtilesSourceLayer: string
+  pmtilesReady: boolean
+}) {
+  const patch = (next: Partial<VisualSettings>) => onChange({ ...settings, ...next })
+  return (
+    <div className="pe-visual-menu">
+      <div className="pe-visual-menu-head">
+        <span>Visual Settings</span>
+        <button onClick={onClose}>×</button>
+      </div>
+      <label className="pe-visual-row">
+        <input type="checkbox" checked={settings.showDots} onChange={event => patch({ showDots: event.target.checked })} />
+        <span>Parcel dots</span>
+      </label>
+      <label className="pe-visual-row">
+        <input type="checkbox" checked={settings.showPolygonFill} onChange={event => patch({ showPolygonFill: event.target.checked })} />
+        <span>Boundary fill</span>
+      </label>
+      <label className="pe-visual-row">
+        <input type="checkbox" checked={settings.streetClearEdges} onChange={event => patch({ streetClearEdges: event.target.checked })} />
+        <span>Soften street-facing edge</span>
+      </label>
+      <label className="pe-visual-row">
+        <input type="checkbox" checked={settings.datasetColorDots} onChange={event => patch({ datasetColorDots: event.target.checked })} />
+        <span>Dataset colors on dots</span>
+      </label>
+      <label className="pe-visual-row">
+        <input type="checkbox" checked={settings.showTopoOverlay} onChange={event => patch({ showTopoOverlay: event.target.checked })} />
+        <span>Topographic overlay</span>
+      </label>
+      <label className="pe-visual-row">
+        <input type="checkbox" checked={settings.showHeatOverlay} onChange={event => patch({ showHeatOverlay: event.target.checked })} />
+        <span>Owner heat overlay</span>
+      </label>
+      <label className="pe-visual-row">
+        <input type="checkbox" checked={settings.showPmtilesInspector} onChange={event => patch({ showPmtilesInspector: event.target.checked })} />
+        <span>PMTiles inspector</span>
+      </label>
+      <label className="pe-visual-slider">
+        <span>Boundary strength</span>
+        <input
+          type="range"
+          min="0.5"
+          max="3"
+          step="0.25"
+          value={settings.lineStrength}
+          onChange={event => patch({ lineStrength: Number(event.target.value) })}
+        />
+      </label>
+
+      {settings.showPmtilesInspector && (
+        <div className="pe-pmtiles-inspector">
+          <div className="pe-pmtiles-row">
+            <span className="k">Status</span>
+            <span className="v">{pmtilesReady ? 'Ready' : 'Not ready'}</span>
+          </div>
+          <div className="pe-pmtiles-row">
+            <span className="k">Source-layer</span>
+            <span className="v">{pmtilesSourceLayer || '—'}</span>
+          </div>
+          {!pmtilesInfo && (
+            <div className="pe-pmtiles-hint">PMTiles info not loaded.</div>
+          )}
+          {pmtilesInfo && !pmtilesInfo.ok && (
+            <div className="pe-pmtiles-error">{pmtilesInfo.error ?? 'PMTiles unavailable'}</div>
+          )}
+          {pmtilesInfo?.ok && (
+            <>
+              <div className="pe-pmtiles-row">
+                <span className="k">Zoom</span>
+                <span className="v">{pmtilesInfo.minZoom ?? '—'}–{pmtilesInfo.maxZoom ?? '—'}</span>
+              </div>
+              <div className="pe-pmtiles-layers">
+                {(pmtilesInfo.vectorLayers ?? []).map((layer) => (
+                  <div key={layer.id} className="pe-pmtiles-layer">
+                    <div className="pe-pmtiles-layer-id">{layer.id}</div>
+                    <div className="pe-pmtiles-fields">
+                      {Object.keys(layer.fields ?? {}).length === 0
+                        ? <span className="pe-pmtiles-field dim">No fields</span>
+                        : Object.entries(layer.fields).slice(0, 18).map(([k, v]) => (
+                          <span key={k} className="pe-pmtiles-field">{k}:{String(v)}</span>
+                        ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
+   COMPACT PARCEL CARD
    ═══════════════════════════════════════════════════════════ */
 
 interface ParcelCardProps {
   parcel: ParcelRecord
   isTarget: boolean
   isSelected: boolean
+  isOwnerParcel: boolean
   index: number
   maxTotalValue: number
   onSelect: (parcel: ParcelRecord) => void
@@ -113,32 +894,40 @@ interface ParcelCardProps {
 
 function ParcelCard({
   parcel, isTarget, isSelected, index, maxTotalValue,
+  isOwnerParcel,
   onSelect, onMouseEnter, onMouseLeave
 }: ParcelCardProps) {
   const className = [
     'pe-card',
     isTarget ? 'target' : '',
-    isSelected ? 'selected' : ''
+    isSelected ? 'selected' : '',
+    isOwnerParcel ? 'owner-parcel' : '',
+    parcel.dataSource === 'both' ? 'has-cofo' : ''
   ].filter(Boolean).join(' ')
 
   const valueRatio = maxTotalValue > 0 ? parcel.totalValue / maxTotalValue : 0
+  const borderColor = isOwnerParcel ? DATASET_COLORS.sbf
+    : isTarget ? DATASET_COLORS.target
+    : parcel.dataSource === 'both' ? DATASET_COLORS.both
+    : parcel.dataSource === 'cofo' ? DATASET_COLORS.cofo
+    : DATASET_COLORS.parcel
 
   return (
     <div
       className={className}
-      style={{ animationDelay: `${Math.min(index * 25, 1200)}ms` }}
+      style={{ animationDelay: `${Math.min(index * 20, 800)}ms`, borderLeftColor: borderColor }}
       onClick={() => onSelect(parcel)}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
-      {/* TOPLINE */}
       <div className="pe-card-topline">
         <div className="pe-card-id">{normalizeParcelDisplay(parcel.assessorId)}</div>
-        {isTarget ? (
-          <div className="pe-card-badge target-badge">TARGET</div>
-        ) : (
-          <div className="pe-card-badge node">NODE</div>
-        )}
+        <div className="pe-card-badges">
+          {isTarget && <div className="pe-card-badge target-badge">TARGET</div>}
+          {isOwnerParcel && <div className="pe-card-badge owner-badge">OWNER</div>}
+          {parcel.dataSource === 'both' && <div className="pe-card-badge cofo-badge">C-of-O</div>}
+          {!isTarget && parcel.dataSource !== 'both' && <div className="pe-card-badge node">NODE</div>}
+        </div>
       </div>
 
       <div className="pe-card-address">{formatAddress(parcel)}</div>
@@ -150,7 +939,6 @@ function ParcelCard({
         </div>
       )}
 
-      {/* DATA BODY */}
       <div className="pe-card-body">
         <div className="pe-data-row">
           <span className="pe-data-label">Value</span>
@@ -166,6 +954,12 @@ function ParcelCard({
             {parcel.numberOfBedrooms || '—'} / {parcel.numberOfBathrooms || '—'}
           </span>
         </div>
+        {parcel.cofoStatus && (
+          <div className="pe-data-row">
+            <span className="pe-data-label cofo">C-of-O</span>
+            <span className="pe-data-value cofo-val">{parcel.cofoStatus}</span>
+          </div>
+        )}
         <div className="pe-value-bar-bg">
           <div
             className="pe-value-bar-fill amber"
@@ -174,7 +968,6 @@ function ParcelCard({
         </div>
       </div>
 
-      {/* FOOTER */}
       <div className="pe-card-footer">
         <span>{formatCoord(parcel.latitude)}, {formatCoord(parcel.longitude)}</span>
         <span>AIN {parcel.ain || '—'}</span>
@@ -187,11 +980,13 @@ function ParcelCard({
    DOSSIER SIDEBAR
    ═══════════════════════════════════════════════════════════ */
 
-interface DossierPanelProps {
+function DossierPanel({
+  parcel,
+  onSelectOwner
+}: {
   parcel: ParcelRecord | null
-}
-
-function DossierPanel({ parcel }: DossierPanelProps) {
+  onSelectOwner: (ownerName: string) => void
+}) {
   if (!parcel) {
     return (
       <aside className="pe-dossier">
@@ -199,14 +994,23 @@ function DossierPanel({ parcel }: DossierPanelProps) {
           <div className="pe-dossier-empty-icon">⌘</div>
           <h3>Parcel Dossier</h3>
           <p>
-            Click any parcel marker on the map or card in the bottom
-            strip to load its full dossier into this panel. All 51
-            columns from the LA County Assessor dataset are displayed.
+            Click any parcel boundary, marker, or bottom card to load
+            its full dossier. Cross-referenced data
+            from all active datasets is shown automatically.
           </p>
         </div>
       </aside>
     )
   }
+
+  const Fact = ({ label, value, isCurrency }: { label: string; value: string; isCurrency?: boolean }) => (
+    <DossierFact
+      label={label}
+      value={value}
+      isCurrency={isCurrency}
+      provenance={sourceForFact(label, parcel)}
+    />
+  )
 
   return (
     <aside className="pe-dossier">
@@ -216,7 +1020,12 @@ function DossierPanel({ parcel }: DossierPanelProps) {
           <div className="pe-dossier-kicker">Full Dossier</div>
           <h2 className="pe-dossier-title">{normalizeParcelDisplay(parcel.assessorId)}</h2>
           <div className="pe-dossier-subtitle">{formatAddress(parcel)}</div>
+          <div className="pe-dossier-source-badge" data-source={parcel.dataSource}>
+            {parcel.dataSource === 'both' ? 'PARCEL + C-of-O' : parcel.dataSource === 'cofo' ? 'C-of-O ONLY' : 'PARCEL DATA'}
+          </div>
         </div>
+
+        <OwnerPanel ain={parcel.ain || parcel.assessorId} onSelectOwner={onSelectOwner} />
 
         {/* Summary */}
         <div className="pe-dossier-summary-grid">
@@ -238,111 +1047,188 @@ function DossierPanel({ parcel }: DossierPanelProps) {
           </div>
         </div>
 
+        {/* Certificate of Occupancy (if available) */}
+        {parcel.dataSource === 'both' && (
+          <div className="pe-dossier-section cofo-section">
+            <div className="pe-dossier-section-title cofo">Certificate of Occupancy</div>
+            <Fact label="CofO Number" value={parcel.cofoNumber ?? ''} />
+            <Fact label="Issue Date" value={parcel.cofoIssueDate ?? ''} />
+            <Fact label="Status" value={parcel.cofoStatus ?? ''} />
+            <Fact label="Permit Type" value={parcel.permitType ?? ''} />
+            <Fact label="Sub-Type" value={parcel.permitSubType ?? ''} />
+            <Fact label="Work Description" value={parcel.workDescription ?? ''} />
+            <Fact label="Valuation" value={parcel.cofoValuation ?? ''} isCurrency />
+            <Fact label="Zone" value={parcel.cofoZone ?? ''} />
+            <Fact label="Stories" value={parcel.numberOfStories ?? ''} />
+            <Fact label="Contractor" value={parcel.contractorName ?? ''} />
+          </div>
+        )}
+
+        {(parcel.buildingPermitCount || parcel.electricalPermitCount || parcel.submittedBuildingPermitCount || parcel.inspectionCount) && (
+          <div className="pe-dossier-section">
+            <div className="pe-dossier-section-title">Permit Cross-References</div>
+            <Fact label="Building Permits" value={String(parcel.buildingPermitCount ?? 0)} />
+            <Fact label="Building Valuation" value={formatCurrency(parcel.buildingPermitValuation ?? 0)} isCurrency />
+            <Fact label="Latest Building Permit" value={parcel.latestBuildingPermit ?? ''} />
+            <Fact label="Building Status" value={parcel.latestBuildingPermitStatus ?? ''} />
+            <Fact label="Building Work" value={parcel.latestBuildingPermitDescription ?? ''} />
+            <Fact label="Electrical Permits" value={String(parcel.electricalPermitCount ?? 0)} />
+            <Fact label="Latest Electrical Permit" value={parcel.latestElectricalPermit ?? ''} />
+            <Fact label="Electrical Status" value={parcel.latestElectricalPermitStatus ?? ''} />
+            <Fact label="Electrical Work" value={parcel.latestElectricalPermitDescription ?? ''} />
+            <Fact label="Submitted Building Permits" value={String(parcel.submittedBuildingPermitCount ?? 0)} />
+            <Fact label="Latest Submitted Permit" value={parcel.latestSubmittedBuildingPermit ?? ''} />
+            <Fact label="Submitted Status" value={parcel.latestSubmittedBuildingPermitStatus ?? ''} />
+            <Fact label="Submitted Work" value={parcel.latestSubmittedBuildingPermitDescription ?? ''} />
+            <Fact label="Inspections" value={String(parcel.inspectionCount ?? 0)} />
+            <Fact label="Latest Inspection" value={parcel.latestInspection ?? ''} />
+            <Fact label="Inspection Result" value={parcel.latestInspectionStatus ?? ''} />
+            <Fact label="Inspection Type" value={parcel.latestInspectionDescription ?? ''} />
+          </div>
+        )}
+
         {/* Identity */}
         <div className="pe-dossier-section">
           <div className="pe-dossier-section-title">Identity</div>
-          <DossierFact label="Assessor ID" value={parcel.assessorId} />
-          <DossierFact label="AIN" value={parcel.ain} />
-          <DossierFact label="Roll Year" value={String(parcel.rollYear)} />
-          <DossierFact label="Row ID" value={parcel.rowId} />
-          <DossierFact label="Object ID" value={parcel.objectId} />
+          <Fact label="Assessor ID" value={parcel.assessorId} />
+          <Fact label="AIN" value={parcel.ain} />
+          <Fact label="Roll Year" value={String(parcel.rollYear)} />
+          <Fact label="Row ID" value={parcel.rowId} />
+          <Fact label="Object ID" value={parcel.objectId} />
         </div>
 
         {/* Location */}
         <div className="pe-dossier-section">
           <div className="pe-dossier-section-title">Location</div>
-          <DossierFact label="Property Location" value={parcel.propertyLocation} />
-          <DossierFact label="House #" value={parcel.addressHouseNumber} />
-          <DossierFact label="Direction" value={parcel.direction} />
-          <DossierFact label="Street" value={parcel.street} />
-          <DossierFact label="Unit #" value={parcel.unitNumber} />
-          <DossierFact label="City" value={parcel.city} />
-          <DossierFact label="Zip Code" value={parcel.zipCodeFull || parcel.zipCode} />
-          <DossierFact label="Latitude" value={formatCoord(parcel.latitude)} />
-          <DossierFact label="Longitude" value={formatCoord(parcel.longitude)} />
+          <Fact label="Property Location" value={parcel.propertyLocation} />
+          <Fact label="House #" value={parcel.addressHouseNumber} />
+          <Fact label="Direction" value={parcel.direction} />
+          <Fact label="Street" value={parcel.street} />
+          <Fact label="Unit #" value={parcel.unitNumber} />
+          <Fact label="City" value={parcel.city} />
+          <Fact label="Zip Code" value={parcel.zipCodeFull || parcel.zipCode} />
+          <Fact label="Latitude" value={formatCoord(parcel.latitude)} />
+          <Fact label="Longitude" value={formatCoord(parcel.longitude)} />
         </div>
 
         {/* Use Classification */}
         <div className="pe-dossier-section">
           <div className="pe-dossier-section-title">Use Classification</div>
-          <DossierFact label="Use Type" value={parcel.propertyUseType} />
-          <DossierFact label="Use Code" value={parcel.propertyUseCode} />
-          <DossierFact label="1st Digit" value={parcel.useCode1} />
-          <DossierFact label="2nd Digit" value={parcel.useCode2} />
-          <DossierFact label="3rd Digit" value={parcel.useCode3} />
-          <DossierFact label="4th Digit" value={parcel.useCode4} />
+          <Fact label="Use Type" value={parcel.propertyUseType} />
+          <Fact label="Use Code" value={parcel.propertyUseCode} />
+          <Fact label="1st Digit" value={parcel.useCode1} />
+          <Fact label="2nd Digit" value={parcel.useCode2} />
+          <Fact label="3rd Digit" value={parcel.useCode3} />
+          <Fact label="4th Digit" value={parcel.useCode4} />
+        </div>
+
+        <div className="pe-dossier-section">
+          <div className="pe-dossier-section-title">SB 79 Screening</div>
+          <Fact label="Eligible" value={parcel.sb79Eligible == null ? '' : parcel.sb79Eligible ? 'Yes' : 'No'} />
+          <Fact label="Tier" value={parcel.sb79Tier ?? ''} />
+          <Fact label="Nearest Transit Distance" value={parcel.sb79DistanceToStopFt ? `${parcel.sb79DistanceToStopFt.toLocaleString()} ft` : ''} />
         </div>
 
         {/* Structure */}
         <div className="pe-dossier-section">
           <div className="pe-dossier-section-title">Structure</div>
-          <DossierFact label="# Buildings" value={String(parcel.numberOfBuildings)} />
-          <DossierFact label="Year Built" value={String(parcel.yearBuilt)} />
-          <DossierFact label="Effective Year" value={String(parcel.effectiveYear)} />
-          <DossierFact label="Square Footage" value={formatNumber(parcel.squareFootage)} />
-          <DossierFact label="Bedrooms" value={String(parcel.numberOfBedrooms)} />
-          <DossierFact label="Bathrooms" value={String(parcel.numberOfBathrooms)} />
-          <DossierFact label="Units" value={String(parcel.numberOfUnits)} />
+          <Fact label="# Buildings" value={String(parcel.numberOfBuildings)} />
+          <Fact label="Year Built" value={String(parcel.yearBuilt)} />
+          <Fact label="Effective Year" value={String(parcel.effectiveYear)} />
+          <Fact label="Square Footage" value={formatNumber(parcel.squareFootage)} />
+          <Fact label="Bedrooms" value={String(parcel.numberOfBedrooms)} />
+          <Fact label="Bathrooms" value={String(parcel.numberOfBathrooms)} />
+          <Fact label="Units" value={String(parcel.numberOfUnits)} />
         </div>
 
         {/* Valuation */}
         <div className="pe-dossier-section">
           <div className="pe-dossier-section-title">Valuation</div>
-          <DossierFact label="Land Value" value={formatCurrency(parcel.landValue)} isCurrency />
-          <DossierFact label="Land Base Year" value={String(parcel.landBaseYear)} />
-          <DossierFact label="Improvement Value" value={formatCurrency(parcel.improvementValue)} isCurrency />
-          <DossierFact label="Improvement Base Yr" value={String(parcel.improvementBaseYear)} />
-          <DossierFact label="Land+Improvement" value={formatCurrency(parcel.totalValueLandImprovement)} isCurrency />
+          <Fact label="Land Value" value={formatCurrency(parcel.landValue)} isCurrency />
+          <Fact label="Land Base Year" value={String(parcel.landBaseYear)} />
+          <Fact label="Improvement Value" value={formatCurrency(parcel.improvementValue)} isCurrency />
+          <Fact label="Improvement Base Yr" value={String(parcel.improvementBaseYear)} />
+          <Fact label="Land+Improvement" value={formatCurrency(parcel.totalValueLandImprovement)} isCurrency />
         </div>
 
         {/* Exemptions */}
         <div className="pe-dossier-section">
           <div className="pe-dossier-section-title">Exemptions</div>
-          <DossierFact label="Homeowner Exempt" value={formatCurrency(parcel.homeOwnersExemption)} isCurrency />
-          <DossierFact label="Real Estate Exempt" value={formatCurrency(parcel.realEstateExemption)} isCurrency />
-          <DossierFact label="Fixture Value" value={formatCurrency(parcel.fixtureValue)} isCurrency />
-          <DossierFact label="Fixture Exempt" value={formatCurrency(parcel.fixtureExemption)} isCurrency />
-          <DossierFact label="Personal Prop Val" value={formatCurrency(parcel.personalPropertyValue)} isCurrency />
-          <DossierFact label="Personal Prop Exempt" value={formatCurrency(parcel.personalPropertyExemption)} isCurrency />
+          <Fact label="Homeowner Exempt" value={formatCurrency(parcel.homeOwnersExemption)} isCurrency />
+          <Fact label="Real Estate Exempt" value={formatCurrency(parcel.realEstateExemption)} isCurrency />
+          <Fact label="Fixture Value" value={formatCurrency(parcel.fixtureValue)} isCurrency />
+          <Fact label="Fixture Exempt" value={formatCurrency(parcel.fixtureExemption)} isCurrency />
+          <Fact label="Personal Prop Val" value={formatCurrency(parcel.personalPropertyValue)} isCurrency />
+          <Fact label="Personal Prop Exempt" value={formatCurrency(parcel.personalPropertyExemption)} isCurrency />
         </div>
 
         {/* Tax Roll */}
         <div className="pe-dossier-section">
           <div className="pe-dossier-section-title">Tax Roll</div>
-          <DossierFact label="Property Taxable?" value={parcel.propertyTaxable} />
-          <DossierFact label="Total Value" value={formatCurrency(parcel.totalValue)} isCurrency />
-          <DossierFact label="Total Exemption" value={formatCurrency(parcel.totalExemption)} isCurrency />
-          <DossierFact label="Taxable Value" value={formatCurrency(parcel.taxableValue)} isCurrency />
-          <DossierFact label="Recording Date" value={parcel.recordingDate} />
+          <Fact label="Property Taxable?" value={parcel.propertyTaxable} />
+          <Fact label="Total Value" value={formatCurrency(parcel.totalValue)} isCurrency />
+          <Fact label="Total Exemption" value={formatCurrency(parcel.totalExemption)} isCurrency />
+          <Fact label="Taxable Value" value={formatCurrency(parcel.taxableValue)} isCurrency />
+          <Fact label="Recording Date" value={parcel.recordingDate} />
         </div>
 
         {/* Administrative */}
         <div className="pe-dossier-section">
           <div className="pe-dossier-section-title">Administrative</div>
-          <DossierFact label="City Tax Rate Area" value={parcel.cityTaxRateArea} />
-          <DossierFact label="Tax Rate Area Code" value={parcel.taxRateAreaCode} />
-          <DossierFact label="Classification" value={parcel.classification} />
-          <DossierFact label="Region #" value={parcel.regionNumber} />
-          <DossierFact label="Cluster Code" value={parcel.clusterCode} />
-          <DossierFact label="Legal Description" value={parcel.parcelLegalDescription} />
+          <Fact label="City Tax Rate Area" value={parcel.cityTaxRateArea} />
+          <Fact label="Tax Rate Area Code" value={parcel.taxRateAreaCode} />
+          <Fact label="Classification" value={parcel.classification} />
+          <Fact label="Region #" value={parcel.regionNumber} />
+          <Fact label="Cluster Code" value={parcel.clusterCode} />
+          <Fact label="Legal Description" value={parcel.parcelLegalDescription} />
         </div>
       </div>
     </aside>
   )
 }
 
-function DossierFact({ label, value, isCurrency }: { label: string; value: string; isCurrency?: boolean }) {
+function DossierFact({
+  label,
+  value,
+  isCurrency,
+  provenance
+}: {
+  label: string
+  value: string
+  isCurrency?: boolean
+  provenance?: FactProvenance
+}) {
+  const [open, setOpen] = useState(false)
   const displayValue = value === '0' || !value ? '—' : value
   return (
-    <div className="pe-dossier-fact">
+    <div className={`pe-dossier-fact ${open ? 'open' : ''}`}>
       <span className="pe-dossier-fact-key">{label}</span>
       <span className={`pe-dossier-fact-value ${isCurrency ? 'currency' : ''}`}>{displayValue}</span>
+      {provenance && (
+        <button
+          className="pe-dossier-fact-source"
+          onClick={() => setOpen(current => !current)}
+          title="Show source dataset and match basis"
+        >
+          i
+        </button>
+      )}
+      {open && provenance && (
+        <div className="pe-dossier-provenance">
+          <div><strong>Dataset</strong><span>{provenance.datasetName}</span></div>
+          <div><strong>Fields</strong><span>{provenance.sourceFields.join(', ')}</span></div>
+          <div><strong>Match</strong><span>{provenance.matchKey}</span></div>
+          <div><strong>Normalization</strong><span>{provenance.normalizations.join(' · ')}</span></div>
+          <div><strong>Confidence</strong><span>{provenance.confidence}</span></div>
+          {provenance.notes && <div><strong>Notes</strong><span>{provenance.notes}</span></div>}
+        </div>
+      )}
     </div>
   )
 }
 
 /* ═══════════════════════════════════════════════════════════
-   CUSTOM CURSOR HOOK
+   CUSTOM CURSOR
    ═══════════════════════════════════════════════════════════ */
 
 function useCustomCursor() {
@@ -382,37 +1268,558 @@ function useCustomCursor() {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   MAP COMPONENT
+   MAP VIEW (GeoJSON Layer — perfectly synced markers)
    ═══════════════════════════════════════════════════════════ */
 
 interface MapViewProps {
   parcels: ParcelRecord[]
   targetIds: string[]
+  ownerAins: Set<string>
+  heatCells: HeatMapCell[]
+  selectedParcelIds: Set<string>
+  showPolygons: boolean
+  visualSettings: VisualSettings
   selectedParcel: ParcelRecord | null
+  terrainMetrics: TerrainMetrics | null
+  topoOverlayData: any | null
   onSelectParcel: (parcel: ParcelRecord) => void
+  onSelectParcelByKey: (parcelKey: string, polygon?: ParcelPolygon | null) => void
+  isDrawing: boolean
+  onGroupSelect: (polygons: ParcelPolygon[], mode: ParcelSelectionMode) => void
+  onViewportChange: (bounds: MapBounds) => void
+  onBoundaryStats: (visibleCount: number, renderedCount: number, complete: boolean, suppressed: boolean) => void
+  onMapReady?: (map: maplibregl.Map) => void
+  onBasemapReady?: () => void
+  onBoundariesReady?: () => void
 }
 
-function MapView({ parcels, targetIds, selectedParcel, onSelectParcel }: MapViewProps) {
+function MapView({
+  parcels,
+  targetIds,
+  ownerAins,
+  heatCells,
+  selectedParcelIds,
+  showPolygons,
+  visualSettings,
+  selectedParcel,
+  terrainMetrics,
+  topoOverlayData,
+  onSelectParcel,
+  onSelectParcelByKey,
+  isDrawing,
+  onGroupSelect,
+  onViewportChange,
+  onBoundaryStats,
+  onMapReady,
+  onBasemapReady,
+  onBoundariesReady
+}: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
-  const markersRef = useRef<maplibregl.Marker[]>([])
+  const parcelsRef = useRef<ParcelRecord[]>([])
+  const drawStartRef = useRef<{ lng: number; lat: number } | null>(null)
+  const drawStartScreenRef = useRef<{ x: number; y: number } | null>(null)
+  const initialFitDone = useRef(false)
+  const pmtilesReadyRef = useRef(false)
+  const pmtilesSourceLayerRef = useRef<string>(PMTILES_VECTOR_LAYER_ID)
+  const lastHoverAinRef = useRef<string | null>(null)
+  const lastSelectedAinsRef = useRef<Set<string>>(new Set())
+  const lastOwnerAinsRef = useRef<Set<string>>(new Set())
+  const [hoveredParcelKey, setHoveredParcelKey] = useState<string | null>(null)
+  const [hoverTooltip, setHoverTooltip] = useState<{ x: number; y: number; label: string; sublabel: string } | null>(null)
+  const [drawBox, setDrawBox] = useState<{ x: number; y: number; width: number; height: number } | null>(null)
+  const onSelectParcelRef = useRef(onSelectParcel)
+  const onSelectParcelByKeyRef = useRef(onSelectParcelByKey)
+  const onViewportChangeRef = useRef(onViewportChange)
 
-  // Initialize map
+  // Keep a ref to parcels for click handler
+  parcelsRef.current = parcels
+
+  useEffect(() => {
+    onSelectParcelRef.current = onSelectParcel
+    onSelectParcelByKeyRef.current = onSelectParcelByKey
+    onViewportChangeRef.current = onViewportChange
+  }, [onSelectParcel, onSelectParcelByKey, onViewportChange])
+
+  // Initialize map once
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return
 
+    const saved = getSavedMapState()
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: MAP_STYLE as any,
-      center: LA_CENTER,
-      zoom: DEFAULT_ZOOM,
+      center: saved?.center ?? SANTA_MONICA_MOUNTAINS_CENTER,
+      zoom: saved?.zoom ?? DEFAULT_ZOOM,
       attributionControl: false,
       maxZoom: 18,
       minZoom: 8
     })
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left')
+
+    map.on('load', () => {
+      onBasemapReady?.()
+      ensurePmtilesProtocolRegistered()
+      // Add empty GeoJSON source
+      map.addSource('parcels-source', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+      })
+
+      map.addSource('owner-heat-source', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+      })
+
+      map.addSource('topo-source', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+      })
+
+      // When parcel boundaries are suppressed (too dense / too zoomed-out), we still
+      // want "green street-like linework" as a smooth transition. We derive this
+      // from the same parcel vector tiles by extracting the longest edge per polygon
+      // (heuristic: likely street-facing) and rendering those edges as a separate layer.
+      map.addSource('street-edge-source', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+      })
+
+      const initParcelBoundaryTiles = async (attempt: number = 0) => {
+        try {
+          // The map can load before the preload API is attached (especially under HMR).
+          // Boundaries must retry until the desktop API is ready; otherwise parcels never render.
+          if (!window.rentSeeker?.getParcelPmtilesInfo || !window.rentSeeker?.getParcelPmtilesTile) {
+            if (attempt === 0) console.log('[pmtiles] waiting for preload API…')
+            if (attempt < 120) window.setTimeout(() => void initParcelBoundaryTiles(attempt + 1), 250)
+            return
+          }
+
+          ensurePmtilesProtocolRegistered()
+          const info = await window.rentSeeker.getParcelPmtilesInfo()
+          if (!info.ok) {
+            pmtilesReadyRef.current = false
+            // If PMTiles info isn't available yet (startup race), keep retrying.
+            console.warn('[pmtiles] info not ok:', info.error ?? 'unknown')
+            if (attempt < 120) window.setTimeout(() => void initParcelBoundaryTiles(attempt + 1), 250)
+            return
+          }
+          if (attempt > 0) console.log(`[pmtiles] preload ready after ${attempt} retries`)
+          console.log('[pmtiles] info:', { minZoom: info.minZoom, maxZoom: info.maxZoom, layers: info.vectorLayers?.map(l => l.id) })
+
+          // Ensure the map is within the PMTiles zoom range; otherwise tiles will never request.
+          const minZ = Math.max(Number(info.minZoom ?? 0) || 0, PARCEL_BOUNDARY_RENDER_MIN_ZOOM)
+          if (map.getZoom() < minZ) {
+            map.setZoom(minZ)
+          }
+
+          // Prefer the expected layer id, but fall back to first vector layer.
+          const sourceLayer = info.vectorLayers?.some(layer => layer.id === PMTILES_VECTOR_LAYER_ID)
+            ? PMTILES_VECTOR_LAYER_ID
+            : (info.vectorLayers?.[0]?.id ?? PMTILES_VECTOR_LAYER_ID)
+          pmtilesSourceLayerRef.current = sourceLayer
+
+          if (!map.getSource(PMTILES_VECTOR_SOURCE_ID)) {
+            // Allow one extra zoom level in the source so fractional zoom doesn't strand tile loading.
+            const srcMaxZoom = Math.min(Number(info.maxZoom ?? 22) || 22, PARCEL_BOUNDARY_RENDER_MIN_ZOOM + 1)
+            const httpBase = await window.rentSeeker.getParcelPmtilesHttpBase().catch(() => null)
+            const tileTemplate = httpBase
+              ? `${httpBase}/{z}/{x}/{y}.pbf`
+              : `pmtiles://${PMTILES_ARCHIVE_KEY}/{z}/{x}/{y}.pbf`
+            map.addSource(PMTILES_VECTOR_SOURCE_ID, {
+              type: 'vector',
+              // Prefer HTTP-served tiles so workers can fetch them normally (more reliable in Electron).
+              tiles: [tileTemplate],
+              minzoom: info.minZoom,
+              // Force overzoom at startup so we fetch a less expensive tile pyramid (fewer/heavier tiles at z15).
+              maxzoom: srcMaxZoom,
+              bounds: info.bounds,
+              promoteId: 'AIN'
+            } as any)
+            console.log('[pmtiles] vector source added:', { maxzoom: srcMaxZoom })
+
+            // Prewarm only the single tile under the current center. This verifies IPC/protocol wiring
+            // and gets first paint faster without trying to load the whole viewport.
+            try {
+              const c = map.getCenter()
+              const { x, y } = lngLatToTile(c.lng, c.lat, srcMaxZoom)
+              void window.rentSeeker.getParcelPmtilesTile(srcMaxZoom, x, y)
+            } catch {
+              // ignore
+            }
+          }
+
+          if (!map.getLayer(PMTILES_FILL_LAYER_ID)) {
+            map.addLayer({
+              id: PMTILES_FILL_LAYER_ID,
+              type: 'fill',
+              source: PMTILES_VECTOR_SOURCE_ID,
+              'source-layer': sourceLayer,
+              minzoom: PARCEL_BOUNDARY_RENDER_MIN_ZOOM,
+              paint: {
+                'fill-color': [
+                  'case',
+                  ['boolean', ['feature-state', 'selected'], false], DATASET_COLORS.target,
+                  ['boolean', ['feature-state', 'hover'], false], DATASET_COLORS.selected,
+                  ['boolean', ['feature-state', 'owner'], false], DATASET_COLORS.sbf,
+                  DATASET_COLORS.polygon
+                ],
+                'fill-opacity': [
+                  'case',
+                  ['boolean', ['feature-state', 'selected'], false], 0.18,
+                  ['boolean', ['feature-state', 'hover'], false], 0.14,
+                  ['boolean', ['feature-state', 'owner'], false], 0.1,
+                  visualSettings.showPolygonFill ? 0.04 : 0
+                ]
+              }
+            } as any)
+          }
+
+          if (!map.getLayer(PMTILES_LINE_LAYER_ID)) {
+            map.addLayer({
+              id: PMTILES_LINE_LAYER_ID,
+              type: 'line',
+              source: PMTILES_VECTOR_SOURCE_ID,
+              'source-layer': sourceLayer,
+              minzoom: PARCEL_BOUNDARY_RENDER_MIN_ZOOM,
+              paint: {
+                'line-color': [
+                  'case',
+                  ['boolean', ['feature-state', 'selected'], false], DATASET_COLORS.selected,
+                  ['boolean', ['feature-state', 'hover'], false], DATASET_COLORS.selected,
+                  ['boolean', ['feature-state', 'owner'], false], DATASET_COLORS.sbf,
+                  DATASET_COLORS.polygon
+                ],
+                'line-width': [
+                  'case',
+                  ['boolean', ['feature-state', 'selected'], false], visualSettings.lineStrength * 3,
+                  ['boolean', ['feature-state', 'hover'], false], visualSettings.lineStrength * 2.5,
+                  ['boolean', ['feature-state', 'owner'], false], visualSettings.lineStrength * 2,
+                  visualSettings.lineStrength
+                ],
+                'line-opacity': 0.86
+              }
+            } as any)
+          }
+
+          pmtilesReadyRef.current = true
+          // Nudge MapLibre to schedule tile work without changing zoom (overzoom edge cases are real).
+          try { map.resize() } catch { /* ignore */ }
+          // Mark boundary-ready after the first PMTiles tile is actually served to MapLibre.
+          // `isSourceLoaded()` can be flaky with custom protocols; first-tile is a real signal.
+          const markReady = () => {
+            onBoundariesReady?.()
+            window.removeEventListener('rentseeker:pmtiles:first-tile', markReady as any)
+            map.off('sourcedata', tryMarkReady as any)
+          }
+          window.addEventListener('rentseeker:pmtiles:first-tile', markReady as any)
+          console.log('[pmtiles] listening for first tile…')
+
+          // Fallback: if source reports loaded, also mark ready.
+          const tryMarkReady = () => {
+            if (map.isSourceLoaded(PMTILES_VECTOR_SOURCE_ID)) markReady()
+          }
+          map.on('sourcedata', tryMarkReady as any)
+        } catch {
+          pmtilesReadyRef.current = false
+          if (attempt < 120) window.setTimeout(() => void initParcelBoundaryTiles(attempt + 1), 250)
+        }
+      }
+
+      void initParcelBoundaryTiles()
+
+      // Kick a zero-duration moveend so boundary tile loading starts immediately
+      // (important when boundary rendering is debounced to moveend).
+      try {
+        map.easeTo({ center: map.getCenter(), zoom: map.getZoom(), duration: 0 })
+      } catch {
+        // ignore
+      }
+
+      // Circle layer for normal parcels
+      map.addLayer({
+        id: 'parcels-circles',
+        type: 'circle',
+        source: 'parcels-source',
+        paint: {
+          'circle-radius': [
+            'case',
+            ['==', ['get', 'isSelected'], true], 10,
+            ['==', ['get', 'isTarget'], true], 8,
+            5
+          ],
+          'circle-color': [
+            'case',
+            ['==', ['get', 'isSelected'], true], '#ffffff',
+            ['==', ['get', 'isOwnerParcel'], true], DATASET_COLORS.sbf,
+            ['==', ['get', 'isTarget'], true], DATASET_COLORS.target,
+            ['==', ['get', 'dataSource'], 'cofo'], DATASET_COLORS.cofo,
+            ['==', ['get', 'dataSource'], 'building'], DATASET_COLORS.building,
+            ['==', ['get', 'dataSource'], 'electrical'], DATASET_COLORS.electrical,
+            ['==', ['get', 'dataSource'], 'submitted'], DATASET_COLORS.submitted,
+            ['==', ['get', 'dataSource'], 'inspection'], DATASET_COLORS.inspection,
+            DATASET_COLORS.parcel
+          ],
+          'circle-opacity': [
+            'case',
+            ['==', ['get', 'isSelected'], true], 1,
+            ['==', ['get', 'isTarget'], true], 0.9,
+            0.7
+          ],
+          'circle-stroke-width': [
+            'case',
+            ['==', ['get', 'isSelected'], true], 3,
+            ['==', ['get', 'isOwnerParcel'], true], 3,
+            ['==', ['get', 'isTarget'], true], 2,
+            1
+          ],
+          'circle-stroke-color': [
+            'case',
+            ['==', ['get', 'isSelected'], true], DATASET_COLORS.target,
+            ['==', ['get', 'isOwnerParcel'], true], DATASET_COLORS.sbf,
+            ['==', ['get', 'isTarget'], true], DATASET_COLORS.target,
+            'rgba(255,255,255,0.3)'
+          ],
+          'circle-blur': 0.1
+        }
+      })
+
+      // Glow layer behind selected/target markers
+      map.addLayer({
+        id: 'parcels-glow',
+        type: 'circle',
+        source: 'parcels-source',
+        filter: ['any',
+          ['==', ['get', 'isSelected'], true],
+          ['==', ['get', 'isOwnerParcel'], true],
+          ['==', ['get', 'isTarget'], true]
+        ],
+        paint: {
+          'circle-radius': [
+            'case',
+            ['==', ['get', 'isSelected'], true], 20,
+            14
+          ],
+          'circle-color': [
+            'case',
+            ['==', ['get', 'isSelected'], true], DATASET_COLORS.target,
+            DATASET_COLORS.target
+          ],
+          'circle-opacity': 0.15,
+          'circle-blur': 1
+        }
+      }, 'parcels-circles') // Insert below circles
+
+      map.addLayer({
+        id: 'owner-heat-layer',
+        type: 'heatmap',
+        source: 'owner-heat-source',
+        layout: { visibility: visualSettings.showHeatOverlay ? 'visible' : 'none' },
+        paint: {
+          'heatmap-weight': [
+            'interpolate',
+            ['linear'],
+            ['get', 'w'],
+            0, 0,
+            1, 1
+          ],
+          'heatmap-intensity': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            10, 0.6,
+            13, 1.0,
+            15, 1.3
+          ],
+          'heatmap-radius': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            10, 12,
+            13, 18,
+            15, 24
+          ],
+          'heatmap-opacity': 0.55,
+          'heatmap-color': [
+            'interpolate',
+            ['linear'],
+            ['heatmap-density'],
+            0, 'rgba(0,0,0,0)',
+            0.2, 'rgba(0,212,255,0.45)',
+            0.45, 'rgba(171,255,2,0.55)',
+            0.7, 'rgba(255,222,89,0.65)',
+            1, 'rgba(255,75,75,0.75)'
+          ]
+        }
+      } as any, 'parcels-glow')
+
+      map.addLayer({
+        id: 'street-edge-layer',
+        type: 'line',
+        source: 'street-edge-source',
+        layout: { visibility: 'none' },
+        paint: {
+          'line-color': DATASET_COLORS.polygon,
+          'line-opacity': 0.65,
+          'line-width': 1.35
+        }
+      } as any, 'parcels-glow')
+
+      map.addLayer({
+        id: 'topo-points-layer',
+        type: 'circle',
+        source: 'topo-source',
+        layout: { visibility: visualSettings.showTopoOverlay ? 'visible' : 'none' },
+        paint: {
+          'circle-radius': [
+            'interpolate', ['linear'], ['zoom'],
+            10, 2,
+            13, 3,
+            15, 4
+          ],
+          'circle-color': [
+            'interpolate',
+            ['linear'],
+            ['get', 'n'],
+            0, 'rgba(0, 140, 255, 0.55)',
+            0.5, 'rgba(171, 255, 2, 0.55)',
+            1, 'rgba(255, 222, 89, 0.65)'
+          ],
+          'circle-opacity': 0.6,
+          'circle-blur': 0.2
+        }
+      } as any, 'parcels-glow')
+
+      // Click handler (dots)
+      map.on('click', 'parcels-circles', (e) => {
+        if (e.features && e.features.length > 0) {
+          const assessorId = e.features[0].properties?.assessorId
+          const parcel = parcelsRef.current.find(p => p.assessorId === assessorId)
+          if (parcel) onSelectParcelRef.current(parcel)
+        }
+      })
+
+      const polygonFromProps = (props: any): ParcelPolygon | null => {
+        const ain = String(props?.AIN ?? props?.ain ?? '').trim()
+        const apn = String(props?.APN ?? props?.apn ?? '').trim()
+        if (!ain && !apn) return null
+        return {
+          ain,
+          apn,
+          address: String(props?.SitusFullAddress ?? props?.address ?? '').trim(),
+          useCode: String(props?.UseCode ?? props?.useCode ?? '').trim(),
+          useType: String(props?.UseType ?? props?.useType ?? '').trim(),
+          geometry: { type: 'Polygon', coordinates: [] } as any,
+          centerLat: Number(props?.CENTER_LAT ?? props?.centerLat ?? 0) || 0,
+          centerLon: Number(props?.CENTER_LON ?? props?.centerLon ?? 0) || 0
+        }
+      }
+
+      const selectPolygonFeature = (e: maplibregl.MapLayerMouseEvent) => {
+        if (!e.features?.length) return
+        const props = e.features[0].properties ?? {}
+        const polygon = polygonFromProps(props)
+        const key = polygon?.ain || polygon?.apn || ''
+        if (!key) return
+        onSelectParcelByKeyRef.current(key, polygon)
+      }
+
+      const hoverPolygonFeature = (e: maplibregl.MapLayerMouseEvent) => {
+        if (!e.features?.length) return
+        const props = e.features[0].properties ?? {}
+        const ain = String(props.AIN ?? props.ain ?? '').trim()
+        const apn = String(props.APN ?? props.apn ?? '').trim()
+        const key = ain || apn
+        if (!key) return
+        setHoveredParcelKey(key)
+        setHoverTooltip({
+          x: e.point.x,
+          y: e.point.y,
+          label: String(apn || ain || 'Parcel'),
+          sublabel: String(props.SitusFullAddress || props.address || 'Address unavailable')
+        })
+        if (pmtilesReadyRef.current && ain) {
+          const prev = lastHoverAinRef.current
+          if (prev && prev !== ain) {
+            map.setFeatureState(
+              { source: PMTILES_VECTOR_SOURCE_ID, sourceLayer: pmtilesSourceLayerRef.current, id: prev } as any,
+              { hover: false }
+            )
+          }
+          lastHoverAinRef.current = ain
+          map.setFeatureState(
+            { source: PMTILES_VECTOR_SOURCE_ID, sourceLayer: pmtilesSourceLayerRef.current, id: ain } as any,
+            { hover: true }
+          )
+        }
+        map.getCanvas().style.cursor = 'pointer'
+      }
+
+      const clearPolygonHover = () => {
+        setHoveredParcelKey(null)
+        setHoverTooltip(null)
+        const prev = lastHoverAinRef.current
+        if (pmtilesReadyRef.current && prev) {
+          map.setFeatureState(
+            { source: PMTILES_VECTOR_SOURCE_ID, sourceLayer: pmtilesSourceLayerRef.current, id: prev } as any,
+            { hover: false }
+          )
+        }
+        lastHoverAinRef.current = null
+        map.getCanvas().style.cursor = ''
+      }
+
+      let boundaryHandlersRegistered = false
+      const registerBoundaryHandlers = () => {
+        if (boundaryHandlersRegistered) return
+        if (!map.getLayer(PMTILES_FILL_LAYER_ID) || !map.getLayer(PMTILES_LINE_LAYER_ID)) return
+        boundaryHandlersRegistered = true
+        map.on('click', PMTILES_FILL_LAYER_ID, selectPolygonFeature)
+        map.on('click', PMTILES_LINE_LAYER_ID, selectPolygonFeature)
+        map.on('mousemove', PMTILES_FILL_LAYER_ID, hoverPolygonFeature)
+        map.on('mousemove', PMTILES_LINE_LAYER_ID, hoverPolygonFeature)
+        map.on('mouseleave', PMTILES_FILL_LAYER_ID, clearPolygonHover)
+        map.on('mouseleave', PMTILES_LINE_LAYER_ID, clearPolygonHover)
+      }
+      map.on('click', async (e) => {
+        const layers: string[] = ['parcels-circles']
+        if (map.getLayer(PMTILES_FILL_LAYER_ID)) layers.push(PMTILES_FILL_LAYER_ID)
+        if (map.getLayer(PMTILES_LINE_LAYER_ID)) layers.push(PMTILES_LINE_LAYER_ID)
+        const rendered = map.queryRenderedFeatures(e.point, { layers })
+        if (rendered.length > 0) return
+        try {
+          const polygon = await window.rentSeeker.getParcelByPoint(e.lngLat.lng, e.lngLat.lat)
+          if (polygon) onSelectParcelByKeyRef.current(polygon.ain || polygon.apn, polygon)
+        } catch {
+          // Point lookup is a fallback; rendered feature clicks remain the primary path.
+        }
+      })
+      // The PMTiles boundary layers are added asynchronously. Register interactions only after they're present.
+      map.on('idle', registerBoundaryHandlers)
+
+      // Hover cursor
+      map.on('mouseenter', 'parcels-circles', () => {
+        map.getCanvas().style.cursor = 'pointer'
+      })
+      map.on('mouseleave', 'parcels-circles', () => {
+        map.getCanvas().style.cursor = ''
+      })
+
+      map.on('moveend', () => {
+        const bounds = map.getBounds()
+        saveMapState(map)
+        onViewportChangeRef.current({
+          north: bounds.getNorth(),
+          south: bounds.getSouth(),
+          east: bounds.getEast(),
+          west: bounds.getWest()
+        })
+      })
+    })
+
     mapRef.current = map
+    if (onMapReady) onMapReady(map)
 
     return () => {
       map.remove()
@@ -420,71 +1827,470 @@ function MapView({ parcels, targetIds, selectedParcel, onSelectParcel }: MapView
     }
   }, [])
 
-  // Plot markers when parcels change
+  // Keep MapLibre layer visibility + boundary counts in sync with viewport.
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
+    let revealTimer: number | null = null
+    let pollTimer: number | null = null
+    let lastCountTs = 0
+    let lastSeenSize = 0
+    let lastSuppressed = false
+    let consecutiveOver = 0
+    let consecutiveUnder = 0
+    let lastMoveStartAt = performance.now()
 
-    // Wait for map to load
-    const plotMarkers = () => {
-      // Clear old markers
-      markersRef.current.forEach(m => m.remove())
-      markersRef.current = []
+    // Hysteresis to prevent flicker while tiles stream in.
+    const SUPPRESS_HIDE_THRESHOLD = Math.round(MAX_VISIBLE_PARCEL_BOUNDARIES * 1.12) // ~2800
+    const SUPPRESS_SHOW_THRESHOLD = Math.round(MAX_VISIBLE_PARCEL_BOUNDARIES * 0.88) // ~2200
 
-      // Filter parcels with valid coords
+    const applyVisibility = () => {
+      const visibility = showPolygons ? 'visible' : 'none'
+      if (map.getLayer(PMTILES_LINE_LAYER_ID)) map.setLayoutProperty(PMTILES_LINE_LAYER_ID, 'visibility', visibility)
+      if (map.getLayer(PMTILES_FILL_LAYER_ID)) map.setLayoutProperty(PMTILES_FILL_LAYER_ID, 'visibility', visibility)
+    }
+
+    const setBoundaryOpacity = (opts: { line: number; fill: number }) => {
+      try {
+        if (map.getLayer(PMTILES_LINE_LAYER_ID)) map.setPaintProperty(PMTILES_LINE_LAYER_ID, 'line-opacity', opts.line)
+      } catch { /* ignore */ }
+      try {
+        if (map.getLayer(PMTILES_FILL_LAYER_ID)) map.setPaintProperty(PMTILES_FILL_LAYER_ID, 'fill-opacity', opts.fill)
+      } catch { /* ignore */ }
+    }
+
+    const setStreetEdgesVisible = (visible: boolean) => {
+      try {
+        if (map.getLayer('street-edge-layer')) {
+          map.setLayoutProperty('street-edge-layer', 'visibility', visible ? 'visible' : 'none')
+        }
+      } catch { /* ignore */ }
+    }
+
+    const setStreetEdgesData = (features: any[]) => {
+      try {
+        const src = map.getSource('street-edge-source') as maplibregl.GeoJSONSource | undefined
+        src?.setData({ type: 'FeatureCollection', features } as any)
+      } catch { /* ignore */ }
+    }
+
+    const extractStreetEdges = (): any[] => {
+      // Keep this cheap: use only a subset of currently-rendered fill features.
+      // We do not need exactness; we need a stable green "street-like" network.
+      if (!map.getLayer(PMTILES_FILL_LAYER_ID)) return []
+      const hits = map.queryRenderedFeatures(undefined, { layers: [PMTILES_FILL_LAYER_ID] } as any)
+      if (!hits || hits.length === 0) return []
+
+      const maxFeatures = 900
+      const step = Math.max(1, Math.floor(hits.length / maxFeatures))
+      const features: any[] = []
+
+      const segLen2 = (a: number[], b: number[]) => {
+        const dx = (b[0] - a[0]) * 92383
+        const dy = (b[1] - a[1]) * 111139
+        return dx * dx + dy * dy
+      }
+
+      for (let i = 0; i < hits.length; i += step) {
+        const g: any = (hits[i] as any).geometry
+        if (!g) continue
+        const addFromRing = (ring: number[][]) => {
+          if (!Array.isArray(ring) || ring.length < 3) return
+          let bestI = -1
+          let best = -Infinity
+          for (let j = 0; j < ring.length - 1; j++) {
+            const a = ring[j]; const b = ring[j + 1]
+            const l2 = segLen2(a, b)
+            if (l2 > best) { best = l2; bestI = j }
+          }
+          if (bestI < 0) return
+          const a = ring[bestI]; const b = ring[bestI + 1]
+          features.push({
+            type: 'Feature',
+            geometry: { type: 'LineString', coordinates: [a, b] },
+            properties: {}
+          })
+        }
+
+        if (g.type === 'Polygon') {
+          addFromRing(g.coordinates?.[0] ?? [])
+        } else if (g.type === 'MultiPolygon') {
+          const poly0 = g.coordinates?.[0]?.[0]
+          if (poly0) addFromRing(poly0)
+        }
+        if (features.length >= maxFeatures) break
+      }
+      return features
+    }
+
+    const updateCounts = () => {
+      const now = performance.now()
+      if (now - lastCountTs < 250) return
+      lastCountTs = now
+      if (!showPolygons || !pmtilesReadyRef.current) {
+        onBoundaryStats(0, 0, true, false)
+        return
+      }
+      if (map.getZoom() < PARCEL_BOUNDARY_RENDER_MIN_ZOOM) {
+        // Too zoomed-out: suppress exact parcel outlines and show the green street-edge transition.
+        lastSuppressed = true
+        setBoundaryOpacity({ line: 0, fill: 0 })
+        setStreetEdgesVisible(true)
+        setStreetEdgesData(extractStreetEdges())
+        onBoundaryStats(0, 0, true, true)
+        return
+      }
+      if (!map.getLayer(PMTILES_LINE_LAYER_ID)) {
+        onBoundaryStats(0, 0, true, false)
+        return
+      }
+      const features = map.queryRenderedFeatures(undefined, { layers: [PMTILES_LINE_LAYER_ID] } as any)
+      const seen = new Set<string>()
+      for (let idx = 0; idx < features.length; idx++) {
+        const feature = features[idx]
+        const props: any = (feature as any).properties ?? {}
+        const ain = String(props.AIN ?? props.ain ?? '').trim()
+        const apn = String(props.APN ?? props.apn ?? '').trim()
+        const objectId = String(props.OBJECTID ?? props.objectid ?? props.ObjectID ?? props.oid ?? '').trim()
+        // With promoteId enabled, feature.id should be stable even if AIN isn't present in properties.
+        const fid = (feature as any).id != null ? String((feature as any).id) : ''
+        const key = ain || apn || fid || objectId || String(idx)
+        seen.add(key)
+      }
+      lastSeenSize = seen.size
+      // Density suppression with hysteresis to prevent mid-stream flicker.
+      // We only flip suppression after several consecutive polls.
+      if (seen.size > SUPPRESS_HIDE_THRESHOLD) {
+        consecutiveOver += 1
+        consecutiveUnder = 0
+      } else if (seen.size < SUPPRESS_SHOW_THRESHOLD && seen.size > 0) {
+        consecutiveUnder += 1
+        consecutiveOver = 0
+      } else {
+        // In the deadband: do not change state.
+        consecutiveOver = 0
+        consecutiveUnder = 0
+      }
+
+      const stable = (performance.now() - lastMoveStartAt) > 450
+      const nextSuppressed = stable
+        ? (lastSuppressed ? (consecutiveUnder >= 3 ? false : lastSuppressed) : (consecutiveOver >= 3 ? true : lastSuppressed))
+        : lastSuppressed
+
+      if (nextSuppressed !== lastSuppressed) {
+        lastSuppressed = nextSuppressed
+        if (lastSuppressed) {
+          setBoundaryOpacity({ line: 0, fill: 0 })
+          setStreetEdgesVisible(true)
+          setStreetEdgesData(extractStreetEdges())
+        } else {
+          setStreetEdgesVisible(false)
+          setStreetEdgesData([])
+        }
+      } else if (lastSuppressed) {
+        // Refresh street edges lightly while suppressed so they match the current view.
+        if (stable) setStreetEdgesData(extractStreetEdges())
+      }
+
+      onBoundaryStats(seen.size, seen.size, true, lastSuppressed)
+    }
+
+    applyVisibility()
+    updateCounts()
+    // Parcels: only reveal boundary layers after the user has stopped moving for a beat.
+    const hideBoundaries = () => {
+      if (!showPolygons) return
+      lastMoveStartAt = performance.now()
+      if (revealTimer != null) {
+        window.clearTimeout(revealTimer)
+        revealTimer = null
+      }
+      if (pollTimer != null) {
+        window.clearTimeout(pollTimer)
+        pollTimer = null
+      }
+    }
+    const revealBoundaries = () => {
+      if (!showPolygons) return
+      if (map.getZoom() < PARCEL_BOUNDARY_RENDER_MIN_ZOOM) return
+      if (revealTimer != null) window.clearTimeout(revealTimer)
+      revealTimer = window.setTimeout(() => {
+        // Reset hysteresis on new settle.
+        consecutiveOver = 0
+        consecutiveUnder = 0
+        // Ensure layers are visible, but start effectively hidden while we measure density.
+        try { if (map.getLayer(PMTILES_LINE_LAYER_ID)) map.setLayoutProperty(PMTILES_LINE_LAYER_ID, 'visibility', 'visible') } catch { /* ignore */ }
+        try { if (map.getLayer(PMTILES_FILL_LAYER_ID)) map.setLayoutProperty(PMTILES_FILL_LAYER_ID, 'visibility', 'visible') } catch { /* ignore */ }
+        // Use near-zero opacity so MapLibre still considers features rendered for queryRenderedFeatures.
+        setBoundaryOpacity({ line: 0.01, fill: 0.0 })
+        // Tiles may still be streaming. Poll briefly until something renders so the loader can advance.
+        let tries = 0
+        const poll = () => {
+          tries += 1
+          updateCounts()
+          if (!lastSuppressed && lastSeenSize > 0) {
+            try {
+              setBoundaryOpacity({ line: 0.86, fill: 0.0001 })
+              if (map.getLayer(PMTILES_FILL_LAYER_ID)) {
+                map.setPaintProperty(PMTILES_FILL_LAYER_ID, 'fill-opacity', [
+                  'case',
+                  ['boolean', ['feature-state', 'selected'], false], 0.18,
+                  ['boolean', ['feature-state', 'hover'], false], 0.14,
+                  ['boolean', ['feature-state', 'owner'], false], 0.1,
+                  visualSettings.showPolygonFill ? 0.04 : 0
+                ])
+              }
+            } catch {
+              // ignore
+            }
+            return
+          }
+          if (lastSuppressed && lastSeenSize > 0) {
+            // Suppressed due to density: show street edges transition.
+            setStreetEdgesVisible(true)
+            setStreetEdgesData(extractStreetEdges())
+            return
+          }
+          // Stop after ~10s; if boundaries still haven't rendered, keep stage visible but don't spin forever.
+          if (tries < 40) pollTimer = window.setTimeout(poll, 250)
+        }
+        poll()
+      }, 420)
+    }
+    const onSourceData = (e: any) => {
+      if (!e?.sourceId || e.sourceId !== PMTILES_VECTOR_SOURCE_ID) return
+      updateCounts()
+    }
+    map.on('movestart', hideBoundaries)
+    map.on('moveend', revealBoundaries)
+    map.on('sourcedata', onSourceData)
+    // Initial bring-up: trigger the same reveal debounce once so boundary tiles begin requesting.
+    revealBoundaries()
+    return () => {
+      map.off('movestart', hideBoundaries)
+      map.off('moveend', revealBoundaries)
+      map.off('sourcedata', onSourceData)
+      if (revealTimer != null) window.clearTimeout(revealTimer)
+      if (pollTimer != null) window.clearTimeout(pollTimer)
+    }
+  }, [showPolygons, visualSettings.showPolygonFill, onBoundaryStats])
+
+  // Update topo overlay GeoJSON (terrain samples) + visibility.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const src = map.getSource('topo-source') as maplibregl.GeoJSONSource | undefined
+    if (!src) return
+    const visible = visualSettings.showTopoOverlay ? 'visible' : 'none'
+    if (map.getLayer('topo-points-layer')) map.setLayoutProperty('topo-points-layer', 'visibility', visible)
+    if (!visualSettings.showTopoOverlay || !topoOverlayData?.samples) {
+      src.setData({ type: 'FeatureCollection', features: [] } as any)
+      return
+    }
+    const samples = Array.isArray(topoOverlayData.samples) ? topoOverlayData.samples : []
+    const zs = samples.map((s: any) => Number(s.z)).filter((n: number) => Number.isFinite(n))
+    const minZ = zs.length ? Math.min(...zs) : 0
+    const maxZ = zs.length ? Math.max(...zs) : 1
+    const features = samples
+      .map((s: any) => {
+        const lat = Number(s.lat); const lng = Number(s.lng); const z = Number(s.z)
+        if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(z)) return null
+        const n = maxZ > minZ ? (z - minZ) / (maxZ - minZ) : 0.5
+        return {
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: [lng, lat] },
+          properties: { z, n }
+        }
+      })
+      .filter(Boolean)
+    src.setData({ type: 'FeatureCollection', features } as any)
+  }, [topoOverlayData, visualSettings.showTopoOverlay])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !pmtilesReadyRef.current) return
+    if (map.getLayer(PMTILES_FILL_LAYER_ID)) {
+      map.setPaintProperty(PMTILES_FILL_LAYER_ID, 'fill-opacity', [
+        'case',
+        ['boolean', ['feature-state', 'selected'], false], 0.18,
+        ['boolean', ['feature-state', 'hover'], false], 0.14,
+        ['boolean', ['feature-state', 'owner'], false], 0.1,
+        visualSettings.showPolygonFill ? 0.04 : 0
+      ])
+    }
+    if (map.getLayer(PMTILES_LINE_LAYER_ID)) {
+      map.setPaintProperty(PMTILES_LINE_LAYER_ID, 'line-width', [
+        'case',
+        ['boolean', ['feature-state', 'selected'], false], visualSettings.lineStrength * 3,
+        ['boolean', ['feature-state', 'hover'], false], visualSettings.lineStrength * 2.5,
+        ['boolean', ['feature-state', 'owner'], false], visualSettings.lineStrength * 2,
+        visualSettings.lineStrength
+      ])
+    }
+  }, [visualSettings.showPolygonFill, visualSettings.lineStrength])
+
+  // Sync owner/selected feature-state for PMTiles layer.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !pmtilesReadyRef.current) return
+    if (!map.isStyleLoaded()) return
+    if (!map.getSource(PMTILES_VECTOR_SOURCE_ID)) return
+    const sourceLayer = pmtilesSourceLayerRef.current
+
+    const nextSelectedAins = new Set<string>()
+    // Highlight the active dossier parcel and any polygons selected via map selection.
+    if (selectedParcel?.ain) nextSelectedAins.add(selectedParcel.ain)
+    for (const id of selectedParcelIds) {
+      const digits = String(id).replace(/[^0-9]/g, '')
+      if (digits.length >= 6 && digits.length <= 14) nextSelectedAins.add(digits)
+    }
+
+    const prevSelected = lastSelectedAinsRef.current
+    try {
+      for (const prev of prevSelected) {
+        if (!nextSelectedAins.has(prev)) {
+          map.setFeatureState({ source: PMTILES_VECTOR_SOURCE_ID, sourceLayer, id: prev } as any, { selected: false })
+        }
+      }
+      for (const ain of nextSelectedAins) {
+        map.setFeatureState({ source: PMTILES_VECTOR_SOURCE_ID, sourceLayer, id: ain } as any, { selected: true })
+      }
+    } catch {
+      // Style reload/HMR can temporarily invalidate feature-state calls.
+      return
+    }
+    lastSelectedAinsRef.current = nextSelectedAins
+
+    const prevOwners = lastOwnerAinsRef.current
+    try {
+      for (const prev of prevOwners) {
+        if (!ownerAins.has(prev)) {
+          map.setFeatureState({ source: PMTILES_VECTOR_SOURCE_ID, sourceLayer, id: prev } as any, { owner: false })
+        }
+      }
+      for (const ain of ownerAins) {
+        map.setFeatureState({ source: PMTILES_VECTOR_SOURCE_ID, sourceLayer, id: ain } as any, { owner: true })
+      }
+    } catch {
+      return
+    }
+    lastOwnerAinsRef.current = new Set(ownerAins)
+  }, [ownerAins, selectedParcel?.ain, selectedParcelIds])
+
+  // Update GeoJSON source when parcels or selection changes
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    let raf: number | null = null
+    let cancelled = false
+
+    const updateSource = () => {
+      const source = map.getSource('parcels-source') as maplibregl.GeoJSONSource | undefined
+      if (!source) return
+
       const geolocated = parcels.filter(
-        p => p.latitude != null && p.longitude != null &&
-             p.latitude !== 0 && p.longitude !== 0
+        p => p.latitude != null && p.longitude != null && p.latitude !== 0 && p.longitude !== 0
       )
 
-      if (geolocated.length === 0) return
+      const center = map.getCenter()
+      const featuresFull = geolocated
+        .map(p => ({
+          p,
+          // radial sort: bloom from current map center
+          d: (p.latitude && p.longitude)
+            ? Math.hypot(p.longitude - center.lng, p.latitude - center.lat)
+            : 0
+        }))
+        .sort((a, b) => a.d - b.d)
+        .map(({ p }) => ({
+        type: 'Feature' as const,
+        geometry: {
+          type: 'Point' as const,
+          coordinates: [p.longitude!, p.latitude!]
+        },
+        properties: {
+          assessorId: p.assessorId,
+          isTarget: targetIds.includes(p.assessorId),
+          isOwnerParcel: ownerAins.has(p.ain),
+          isSelected: selectedParcel?.assessorId === p.assessorId,
+          dataSource: visualSettings.datasetColorDots ? parcelVisualSource(p) : 'parcel'
+        }
+      }))
 
-      // Calculate bounds
-      const bounds = new maplibregl.LngLatBounds()
-      geolocated.forEach(p => {
-        bounds.extend([p.longitude!, p.latitude!])
-      })
-
-      // Plot each parcel
-      geolocated.forEach(p => {
-        const isTarget = targetIds.includes(p.assessorId)
-        const isSelected = selectedParcel?.assessorId === p.assessorId
-
-        const el = document.createElement('div')
-        el.className = `pe-map-marker${isTarget ? ' target' : ''}${isSelected ? ' selected' : ''}`
-
-        // Tooltip
-        const tooltip = document.createElement('div')
-        tooltip.className = 'pe-map-tooltip'
-        tooltip.textContent = `${p.assessorId}${p.propertyLocation ? ' — ' + p.propertyLocation : ''}`
-        el.appendChild(tooltip)
-
-        el.addEventListener('click', (e) => {
-          e.stopPropagation()
-          onSelectParcel(p)
-        })
-
-        const marker = new maplibregl.Marker({ element: el })
-          .setLngLat([p.longitude!, p.latitude!])
-          .addTo(map)
-
-        markersRef.current.push(marker)
-      })
-
-      // Fit bounds to show all markers
-      if (geolocated.length > 1) {
-        map.fitBounds(bounds, { padding: 80, maxZoom: 15, duration: 1200 })
+      // Creative marker load animation (Plan 02): stream points in from center-out.
+      if (!visualSettings.showDots || featuresFull.length <= 1) {
+        source.setData({ type: 'FeatureCollection', features: featuresFull } as any)
       } else {
-        map.flyTo({ center: [geolocated[0].longitude!, geolocated[0].latitude!], zoom: 15, duration: 1200 })
+        if (raf) cancelAnimationFrame(raf)
+        const started = performance.now()
+        const durationMs = Math.min(650, 220 + featuresFull.length * 0.7)
+        const ease = (t: number) => 1 - Math.pow(1 - t, 3)
+
+        const tick = () => {
+          if (cancelled) return
+          const t = Math.min(1, (performance.now() - started) / durationMs)
+          const pct = ease(t)
+          const count = Math.max(1, Math.floor(featuresFull.length * pct))
+          source.setData({ type: 'FeatureCollection', features: featuresFull.slice(0, count) } as any)
+          if (t < 1) raf = requestAnimationFrame(tick)
+        }
+        raf = requestAnimationFrame(tick)
+      }
+
+      // Fit bounds on first load only
+      if (!initialFitDone.current && geolocated.length > 0) {
+        initialFitDone.current = true
+        const bounds = new maplibregl.LngLatBounds()
+        geolocated.forEach(p => bounds.extend([p.longitude!, p.latitude!]))
+        if (geolocated.length > 1) {
+          map.fitBounds(bounds, { padding: 80, maxZoom: 15, duration: 1200 })
+        } else {
+          map.flyTo({ center: [geolocated[0].longitude!, geolocated[0].latitude!], zoom: 15, duration: 1200 })
+        }
       }
     }
 
-    if (map.loaded()) {
-      plotMarkers()
+    if (map.isStyleLoaded()) {
+      updateSource()
     } else {
-      map.on('load', plotMarkers)
+      map.on('load', updateSource)
     }
-  }, [parcels, targetIds, selectedParcel, onSelectParcel])
+    if (map.getLayer('parcels-circles')) {
+      map.setLayoutProperty('parcels-circles', 'visibility', visualSettings.showDots ? 'visible' : 'none')
+      map.setLayoutProperty('parcels-glow', 'visibility', visualSettings.showDots ? 'visible' : 'none')
+    }
+    return () => {
+      cancelled = true
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [parcels, targetIds, ownerAins, selectedParcel, visualSettings])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const source = map.getSource('owner-heat-source') as maplibregl.GeoJSONSource | undefined
+    if (source) {
+      const maxValue = Math.max(1, ...heatCells.map((c) => c.totalValue))
+      source.setData({
+        type: 'FeatureCollection',
+        features: heatCells
+          .filter((cell) => Number.isFinite(cell.latBin) && Number.isFinite(cell.lngBin))
+          .map((cell) => ({
+            type: 'Feature' as const,
+            geometry: {
+              type: 'Point' as const,
+              coordinates: [cell.lngBin, cell.latBin]
+            },
+            properties: {
+              w: Math.min(1, cell.totalValue / (maxValue * 0.25))
+            }
+          }))
+      })
+    }
+    if (map.getLayer('owner-heat-layer')) {
+      map.setLayoutProperty('owner-heat-layer', 'visibility', visualSettings.showHeatOverlay ? 'visible' : 'none')
+    }
+  }, [heatCells, visualSettings.showHeatOverlay])
 
   // Fly to selected parcel
   useEffect(() => {
@@ -497,6 +2303,109 @@ function MapView({ parcels, targetIds, selectedParcel, onSelectParcel }: MapView
     })
   }, [selectedParcel])
 
+  // Draw-a-boundary mode
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+
+    if (isDrawing) {
+      map.getCanvas().style.cursor = 'crosshair'
+
+      const onMouseDown = (e: maplibregl.MapMouseEvent) => {
+        drawStartRef.current = { lng: e.lngLat.lng, lat: e.lngLat.lat }
+        drawStartScreenRef.current = { x: e.point.x, y: e.point.y }
+        setDrawBox({ x: e.point.x, y: e.point.y, width: 0, height: 0 })
+      }
+
+      const onMouseMove = (e: maplibregl.MapMouseEvent) => {
+        if (!drawStartScreenRef.current) return
+        const start = drawStartScreenRef.current
+        setDrawBox({
+          x: Math.min(start.x, e.point.x),
+          y: Math.min(start.y, e.point.y),
+          width: Math.abs(e.point.x - start.x),
+          height: Math.abs(e.point.y - start.y)
+        })
+      }
+
+      const onMouseUp = (e: maplibregl.MapMouseEvent) => {
+        if (!drawStartRef.current) return
+        const start = drawStartRef.current
+        const end = { lng: e.lngLat.lng, lat: e.lngLat.lat }
+        const startScreen = drawStartScreenRef.current
+        drawStartRef.current = null
+        drawStartScreenRef.current = null
+        setDrawBox(null)
+
+        const bounds = {
+          north: Math.max(start.lat, end.lat),
+          south: Math.min(start.lat, end.lat),
+          east: Math.max(start.lng, end.lng),
+          west: Math.min(start.lng, end.lng)
+        }
+
+        // Only complete if the box is meaningful (not a click)
+        if (Math.abs(bounds.north - bounds.south) > 0.001 || Math.abs(bounds.east - bounds.west) > 0.001) {
+          const mode: ParcelSelectionMode = e.originalEvent.altKey ? 'subtract' : e.originalEvent.shiftKey ? 'add' : 'replace'
+          // Primary: select from rendered PMTiles geometry (fast, map-native).
+          if (pmtilesReadyRef.current && startScreen) {
+            const p0 = startScreen
+            const p1 = e.point
+            const bbox: [number, number][] = [
+              [Math.min(p0.x, p1.x), Math.min(p0.y, p1.y)],
+              [Math.max(p0.x, p1.x), Math.max(p0.y, p1.y)]
+            ]
+            const hits = map.queryRenderedFeatures(bbox as any, { layers: [PMTILES_FILL_LAYER_ID] })
+            const byAin = new Map<string, ParcelPolygon>()
+            for (const feature of hits) {
+              const props = (feature as any).properties ?? {}
+              const ain = String(props.AIN ?? '').trim()
+              const apn = String(props.APN ?? '').trim()
+              if (!ain && !apn) continue
+              const key = ain || apn
+              if (!byAin.has(key)) {
+                byAin.set(key, {
+                  ain,
+                  apn,
+                  address: String(props.SitusFullAddress ?? '').trim(),
+                  useCode: String(props.UseCode ?? '').trim(),
+                  useType: String(props.UseType ?? '').trim(),
+                  geometry: { type: 'Polygon', coordinates: [] } as any,
+                  centerLat: Number(props.CENTER_LAT ?? 0) || 0,
+                  centerLon: Number(props.CENTER_LON ?? 0) || 0
+                })
+              }
+            }
+            const polys = [...byAin.values()]
+            if (polys.length > 0) {
+              onGroupSelect(polys, mode)
+              return
+            }
+          }
+
+          // Fallback: service-based selection refinement.
+          window.rentSeeker.getParcelsInBounds(bounds)
+            .then(polys => onGroupSelect(polys, mode))
+            .catch(() => onGroupSelect([], mode))
+        }
+      }
+
+      map.on('mousedown', onMouseDown)
+      map.on('mousemove', onMouseMove)
+      map.on('mouseup', onMouseUp)
+
+      return () => {
+        map.off('mousedown', onMouseDown)
+        map.off('mousemove', onMouseMove)
+        map.off('mouseup', onMouseUp)
+        map.getCanvas().style.cursor = ''
+        setDrawBox(null)
+      }
+    } else {
+      map.getCanvas().style.cursor = ''
+    }
+  }, [isDrawing, onGroupSelect])
+
   const geoCount = parcels.filter(p => p.latitude != null && p.latitude !== 0).length
   const targetCount = parcels.filter(p => targetIds.includes(p.assessorId) && p.latitude != null).length
 
@@ -505,12 +2414,115 @@ function MapView({ parcels, targetIds, selectedParcel, onSelectParcel }: MapView
       <div className="pe-map-overlay">
         <div className="pe-map-stat">
           <div className="pe-map-stat-dot accent" />
-          {targetCount} targets plotted
+          {targetCount} targets
         </div>
         <div className="pe-map-stat">
           <div className="pe-map-stat-dot cyan" />
-          {geoCount} parcels on map
+          {geoCount} on map
         </div>
+      </div>
+      {visualSettings.showTopoOverlay && terrainMetrics && (
+        <div className="pe-map-topo-overlay">
+          <span>{terrainMetrics.bestFitSlopePct.toFixed(1)}% slope</span>
+          <span>{terrainMetrics.demRelief.toFixed(0)}ft relief</span>
+        </div>
+      )}
+      {hoverTooltip && (
+        <div
+          className="pe-parcel-hover-tooltip"
+          style={{ transform: `translate(${hoverTooltip.x + 14}px, ${hoverTooltip.y + 14}px)` }}
+        >
+          <strong>{hoverTooltip.label}</strong>
+          <span>{hoverTooltip.sublabel}</span>
+        </div>
+      )}
+      {drawBox && (
+        <div
+          className="pe-map-draw-box"
+          style={{
+            transform: `translate(${drawBox.x}px, ${drawBox.y}px)`,
+            width: drawBox.width,
+            height: drawBox.height
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
+   CONFIRMATION MODAL
+   ═══════════════════════════════════════════════════════════ */
+
+function ConfirmModal({ count, onConfirm, onCancel }: { count: number; onConfirm: () => void; onCancel: () => void }) {
+  return (
+    <div className="pe-modal-backdrop">
+      <div className="pe-modal">
+        <div className="pe-modal-icon">⚠</div>
+        <h3>Large Query Warning</h3>
+        <p>
+          This filter will return <strong>{count.toLocaleString()}</strong> parcels.
+          Loading this many records may take a while.
+        </p>
+        <div className="pe-modal-actions">
+          <button className="pe-modal-btn cancel" onClick={onCancel}>Cancel</button>
+          <button className="pe-modal-btn confirm" onClick={onConfirm}>Load Anyway</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SelectionGroupPanel({
+  polygons,
+  selectedIds,
+  records,
+  onActivate,
+  onClear
+}: {
+  polygons: ParcelPolygon[]
+  selectedIds: Set<string>
+  records: ParcelRecord[]
+  onActivate: (key: string, polygon?: ParcelPolygon | null) => void
+  onClear: () => void
+}) {
+  const selectedRecords = records.filter(record => parcelRecordKeys(record).some(key => selectedIds.has(key)))
+  const totalValue = selectedRecords.reduce((sum, record) => sum + record.totalValue, 0)
+  const ownerCoverage = polygons.length > 0
+    ? Math.round((polygons.filter(poly => poly.ain).length / polygons.length) * 100)
+    : 0
+  const permitCoverage = selectedRecords.length > 0
+    ? Math.round((selectedRecords.filter(record => (
+      (record.buildingPermitCount ?? 0) > 0 ||
+      (record.electricalPermitCount ?? 0) > 0 ||
+      (record.submittedBuildingPermitCount ?? 0) > 0 ||
+      (record.inspectionCount ?? 0) > 0
+    )).length / selectedRecords.length) * 100)
+    : 0
+
+  if (selectedIds.size === 0 || polygons.length === 0) return null
+
+  return (
+    <div className="pe-selection-group-panel">
+      <div className="pe-selection-group-head">
+        <span>{polygons.length.toLocaleString()} selected parcels</span>
+        <button onClick={onClear}>Clear</button>
+      </div>
+      <div className="pe-selection-group-stats">
+        <div><strong>{formatCurrency(totalValue)}</strong><span>loaded assessed value</span></div>
+        <div><strong>{ownerCoverage}%</strong><span>SBF/APN coverage</span></div>
+        <div><strong>{permitCoverage}%</strong><span>permit coverage</span></div>
+      </div>
+      <div className="pe-selection-group-list">
+        {polygons.slice(0, 24).map(poly => {
+          const key = poly.ain || poly.apn
+          return (
+            <button key={`${key}-${poly.centerLat}-${poly.centerLon}`} onClick={() => onActivate(key, poly)}>
+              {poly.apn || poly.ain}
+            </button>
+          )
+        })}
+        {polygons.length > 24 && <span>+{(polygons.length - 24).toLocaleString()} more</span>}
       </div>
     </div>
   )
@@ -521,36 +2533,746 @@ function MapView({ parcels, targetIds, selectedParcel, onSelectParcel }: MapView
    ═══════════════════════════════════════════════════════════ */
 
 export function ParcelExplorer() {
+  const api = typeof window !== 'undefined' ? window.rentSeeker : undefined
   const [result, setResult] = useState<ParcelQueryResult | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedParcel, setSelectedParcel] = useState<ParcelRecord | null>(null)
   const [searchText, setSearchText] = useState('')
+  const [showCofO, setShowCofO] = useState(true)
+  const [showBuildingPermits, setShowBuildingPermits] = useState(true)
+  const [showElectricalPermits, setShowElectricalPermits] = useState(true)
+  const [showSubmittedPermits, setShowSubmittedPermits] = useState(true)
+  const [showInspections, setShowInspections] = useState(true)
+  const [showPolygons, setShowPolygons] = useState(true)
+  const [isDrawing, setIsDrawing] = useState(false)
+  const [pendingCount, setPendingCount] = useState<number | null>(null)
+  const [pendingFilter, setPendingFilter] = useState<ParcelFilterQuery | null>(null)
+  const [is3D, setIs3D] = useState(false)
+  const [clayMode, setClayMode] = useState(false)
+  const [showSun, setShowSun] = useState(false)
+  const [showView, setShowView] = useState(false)
+  const [showBuild, setShowBuild] = useState(false)
+  const [showAnalytics, setShowAnalytics] = useState(false)
+  const [showPropstreamGrid, setShowPropstreamGrid] = useState(false)
+  const [showVisualSettings, setShowVisualSettings] = useState(false)
+  const [visualSettings, setVisualSettings] = useState<VisualSettings>(DEFAULT_VISUAL_SETTINGS)
+  const [selectedOwnerName, setSelectedOwnerName] = useState<string | null>(null)
+  const [ownerParcelAins, setOwnerParcelAins] = useState<Set<string>>(new Set())
+  const [heatCells, setHeatCells] = useState<HeatMapCell[]>([])
+  const [slopeHover, setSlopeHover] = useState<{ deg: number | null; pos: { x: number; y: number } | null }>({ deg: null, pos: null })
+  const [terrainMetrics, setTerrainMetrics] = useState<TerrainMetrics | null>(null)
+  const [terrainStatus, setTerrainStatus] = useState<{ computed: boolean; reason?: string } | null>(null)
+  const [sunAnalysisForShadow, setSunAnalysisForShadow] = useState<SunAnalysis | null>(null)
+  const [topoOverlayData, setTopoOverlayData] = useState<any | null>(null)
+  const [selectedParcelGeometry, setSelectedParcelGeometry] = useState<Geometry | null>(null)
+  const [mapInstance, setMapInstance] = useState<maplibregl.Map | null>(null)
+  const [loadProgress, setLoadProgress] = useState<DataLoadProgress | null>(null)
+  const [pmtilesInfo, setPmtilesInfo] = useState<ParcelPmtilesInfo | null>(null)
+  const [pmtilesSourceLayer, setPmtilesSourceLayer] = useState<string>(PMTILES_VECTOR_LAYER_ID)
+  const [pmtilesReady, setPmtilesReady] = useState(false)
+  const [viewportRefreshCount, setViewportRefreshCount] = useState(0)
+  const [polygonInteractionOk, setPolygonInteractionOk] = useState(false)
+  const [buildRuns, setBuildRuns] = useState<BuildRunOutput[]>([])
+  const [visibleBoundaryCount, setVisibleBoundaryCount] = useState(0)
+  const [renderedBoundaryCount, setRenderedBoundaryCount] = useState(0)
+  const [boundaryComplete, setBoundaryComplete] = useState(true)
+  const [boundariesSuppressedForDensity, setBoundariesSuppressedForDensity] = useState(false)
+  const [selectedParcelIds, setSelectedParcelIds] = useState<Set<string>>(new Set())
+  const [selectedGroupPolygons, setSelectedGroupPolygons] = useState<ParcelPolygon[]>([])
+  const warmParcelPoolRef = useRef<Map<string, ParcelRecord>>(new Map())
+  const [importingData, setImportingData] = useState(false)
+  const [dropActive, setDropActive] = useState(false)
+
+  // Plan 03: real app-assembly loader tied to actual readiness gates.
+  const assemblyStartedAtRef = useRef<number>(performance.now())
+  const [assemblySteps, setAssemblySteps] = useState<DataLoadStep[]>([
+    { datasetName: 'Basemap', color: '#ffffff', status: 'loading', rowCount: 0, elapsedMs: 0 },
+    { datasetName: 'Parcel Boundary Lines', color: '#abff02', status: 'pending', rowCount: 0, elapsedMs: 0 },
+    { datasetName: 'Parcel Records', color: '#00d4ff', status: 'pending', rowCount: 0, elapsedMs: 0 },
+    { datasetName: 'Owner Index (SBF)', color: '#ffde59', status: 'pending', rowCount: 0, elapsedMs: 0 },
+    { datasetName: 'Panels', color: '#ffffff', status: 'pending', rowCount: 0, elapsedMs: 0 }
+  ])
+  const [assembling, setAssembling] = useState(true)
+  const [runtimeGateStage, setRuntimeGateStage] = useState<'basemap' | 'boundaries' | 'records' | 'owner' | 'done'>('basemap')
+  const [pmtilesStats, setPmtilesStats] = useState<{ tiles: number; totalMs: number; lastMs: number } | null>(null)
+  const [pmtilesStatsDetailed, setPmtilesStatsDetailed] = useState<any | null>(null)
+  const captureOnceRef = useRef<{ boundaries?: boolean; records?: boolean }>({})
+
+  const markAssembly = useCallback((name: string, patch: Partial<DataLoadStep>) => {
+    const elapsedMs = Math.max(0, performance.now() - assemblyStartedAtRef.current)
+    setAssemblySteps((current) => current.map((step) => (
+      step.datasetName === name ? { ...step, ...patch, elapsedMs } : step
+    )))
+  }, [])
+
+  // Keep elapsed time "live" for loading steps so the overlay reflects reality (no stale UI).
+  useEffect(() => {
+    if (!assembling) return
+    const id = window.setInterval(() => {
+      const elapsedMs = Math.max(0, performance.now() - assemblyStartedAtRef.current)
+      setAssemblySteps((current) => current.map((step) => (
+        step.status === 'loading' ? { ...step, elapsedMs } : step
+      )))
+    }, 200)
+    return () => window.clearInterval(id)
+  }, [assembling])
+
+  const sequentializedSteps = useMemo(() => {
+    // User requirement: do not "start" showing step N+1 until step N is actually done/error.
+    let blocked = false
+    return assemblySteps.map((step) => {
+      if (blocked) return { ...step, status: 'pending' as const, rowCount: 0 }
+      if (step.status === 'done' || step.status === 'error') return step
+      blocked = true
+      return step
+    })
+  }, [assemblySteps])
+
+  const [filter, setFilter] = useState<ParcelFilterQuery>(() => {
+    const saved = getSavedMapState()
+    const fallbackBounds = saved?.bounds ?? {
+      north: SANTA_MONICA_MOUNTAINS_CENTER[1] + 0.06,
+      south: SANTA_MONICA_MOUNTAINS_CENTER[1] - 0.06,
+      east: SANTA_MONICA_MOUNTAINS_CENTER[0] + 0.08,
+      west: SANTA_MONICA_MOUNTAINS_CENTER[0] - 0.08
+    }
+    return ({
+    limit: 500,
+    randomSample: true,
+    bounds: fallbackBounds,
+    includeCofO: true,
+    includeBuildingPermits: true,
+    includeElectricalPermits: true,
+    includeSubmittedPermits: true,
+    includeInspections: true,
+    sortField: 'assessorId',
+    sortDir: 'asc'
+    })
+  })
+
+  // PMTiles telemetry for diagnosing slow boundary line load.
+  useEffect(() => {
+    const onStats = (e: any) => {
+      const stats = e?.detail ?? null
+      setPmtilesStats(stats)
+    }
+    window.addEventListener('rentseeker:pmtiles:stats', onStats as any)
+    return () => window.removeEventListener('rentseeker:pmtiles:stats', onStats as any)
+  }, [])
+
+  // Fetch main-process PMTiles stats (I/O vs gunzip vs cache) while boundaries are loading.
+  useEffect(() => {
+    if (!api) return
+    const boundaries = assemblySteps.find(s => s.datasetName === 'Parcel Boundary Lines')
+    if (!assembling || !boundaries || boundaries.status !== 'loading') return
+    let alive = true
+    const tick = async () => {
+      try {
+        const stats = await api.getParcelPmtilesStats()
+        if (alive) setPmtilesStatsDetailed(stats as any)
+      } catch {
+        // ignore
+      }
+    }
+    void tick()
+    const id = window.setInterval(() => void tick(), 500)
+    return () => { alive = false; window.clearInterval(id) }
+  }, [api, assembling, assemblySteps])
 
   const { dotRef, ringRef, hovering, setHovering } = useCustomCursor()
+  const firstLoadRef = useRef(true)
+  const viewportReloadRef = useRef<number | null>(null)
+  const sbfRepairAttemptedRef = useRef(false)
+  const loadInFlightRef = useRef(false)
+  const queuedLoadRef = useRef<{ filterQuery: ParcelFilterQuery; showAssembly: boolean } | null>(null)
+  const activeLoadSignatureRef = useRef<string | null>(null)
+  const lastCompletedLoadSignatureRef = useRef<string | null>(null)
+
+  const parcelLoadSignature = useCallback((filterQuery: ParcelFilterQuery) => {
+    return JSON.stringify({
+      apnPrefix: filterQuery.apnPrefix ?? '',
+      bounds: filterQuery.bounds ? {
+        north: filterQuery.bounds.north,
+        south: filterQuery.bounds.south,
+        east: filterQuery.bounds.east,
+        west: filterQuery.bounds.west
+      } : null,
+      includeCofO: filterQuery.includeCofO !== false,
+      includeBuildingPermits: filterQuery.includeBuildingPermits !== false,
+      includeElectricalPermits: filterQuery.includeElectricalPermits !== false,
+      includeSubmittedPermits: filterQuery.includeSubmittedPermits !== false,
+      includeInspections: filterQuery.includeInspections !== false,
+      limit: filterQuery.limit ?? 500,
+      randomSample: filterQuery.randomSample === true,
+      searchText: filterQuery.searchText ?? '',
+      sortField: filterQuery.sortField ?? '',
+      sortDir: filterQuery.sortDir ?? '',
+      targetParcels: filterQuery.targetParcels ?? '',
+      useType: filterQuery.useType ?? '',
+      valueMin: filterQuery.valueMin ?? null,
+      valueMax: filterQuery.valueMax ?? null,
+      yearBuiltMin: filterQuery.yearBuiltMin ?? null,
+      yearBuiltMax: filterQuery.yearBuiltMax ?? null,
+      hasCofO: filterQuery.hasCofO ?? null
+    })
+  }, [])
+
+  const collectDroppedPaths = useCallback(async (dt: DataTransfer): Promise<string[]> => {
+    const paths = new Set<string>()
+
+    const walkEntry = async (entry: any): Promise<void> => {
+      if (!entry) return
+      if (entry.isFile) {
+        await new Promise<void>((resolve) => {
+          entry.file((file: File) => {
+            const path = (file as any).path
+            if (path) paths.add(path)
+            resolve()
+          })
+        })
+        return
+      }
+      if (!entry.isDirectory) return
+      const reader = entry.createReader()
+      const readBatch = async (): Promise<void> => {
+        const entries: any[] = await new Promise((resolve) => reader.readEntries(resolve))
+        if (!entries.length) return
+        for (const child of entries) await walkEntry(child)
+        await readBatch()
+      }
+      await readBatch()
+    }
+
+    const items = Array.from(dt.items ?? [])
+    for (const item of items) {
+      const entry = (item as any).webkitGetAsEntry?.()
+      if (entry) {
+        await walkEntry(entry)
+      }
+    }
+
+    if (paths.size === 0) {
+      for (const file of Array.from(dt.files ?? [])) {
+        const path = (file as any).path
+        if (path) paths.add(path)
+      }
+    }
+
+    return [...paths]
+  }, [])
+
+  const ingestPaths = useCallback(async (paths: string[]) => {
+    if (!api || paths.length === 0) return
+    setImportingData(true)
+    try {
+      const result = await api.ingestDataPaths({ paths })
+      const next = await api.getDataLoadProgress().catch(() => null)
+      if (next) setLoadProgress(next)
+      if (!result.ok) {
+        console.warn('[import] failed:', result.error ?? 'unknown error')
+      } else {
+        console.log('[import]', result.summary)
+      }
+    } finally {
+      setImportingData(false)
+    }
+  }, [api])
+
+  const pickImportFolder = useCallback(async () => {
+    if (!api) return
+    const folders = await api.pickImportFolder().catch(() => [])
+    if (folders.length === 0) return
+    await ingestPaths(folders)
+  }, [api, ingestPaths])
+
+  const handleDragEnter = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    setDropActive(true)
+  }, [])
+
+  const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }, [])
+
+  const handleDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    setDropActive(false)
+  }, [])
+
+  const handleDrop = useCallback(async (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    setDropActive(false)
+    const paths = await collectDroppedPaths(event.dataTransfer)
+    await ingestPaths(paths)
+  }, [collectDroppedPaths, ingestPaths])
+
+  useEffect(() => {
+    if (!api) return
+    // Strict sequencing: don't even start dataset manifest scans until the core runtime gates are done.
+    if (runtimeGateStage !== 'done') return
+    let alive = true
+    api.getDataLoadProgress().then(progress => {
+      if (alive) setLoadProgress(progress)
+    }).catch(() => undefined)
+    const off = api.onDataLoadProgress((progress) => setLoadProgress(progress))
+    return () => {
+      alive = false
+      off()
+    }
+  }, [api, runtimeGateStage])
+
+  // Mirror dataset-file readiness into the loader as real steps.
+  useEffect(() => {
+    if (!loadProgress) return
+    if (runtimeGateStage !== 'done') return
+    setAssemblySteps((current) => {
+      const baseNames = new Set(current.map((s) => s.datasetName))
+      const next = [...current]
+      for (const step of loadProgress.steps) {
+        const name = `Dataset: ${step.datasetName}`
+        if (!baseNames.has(name)) {
+          next.push({ ...step, datasetName: name })
+          baseNames.add(name)
+        } else {
+          const idx = next.findIndex((s) => s.datasetName === name)
+          if (idx >= 0) next[idx] = { ...next[idx], ...step, datasetName: name }
+        }
+      }
+      return next
+    })
+  }, [loadProgress, runtimeGateStage])
+
+  // Inspect PMTiles layers/fields (drives the progress checklist + inspector UI).
+  useEffect(() => {
+    if (!api) return
+    api.getParcelPmtilesInfo()
+      .then((info) => {
+        setPmtilesInfo(info)
+        const layer = info?.ok && info.vectorLayers?.some(l => l.id === PMTILES_VECTOR_LAYER_ID)
+          ? PMTILES_VECTOR_LAYER_ID
+          : (info?.vectorLayers?.[0]?.id ?? PMTILES_VECTOR_LAYER_ID)
+        setPmtilesSourceLayer(layer)
+      })
+      .catch(() => undefined)
+  }, [api])
+
+  // Prepare the SBF owner index only after records are loaded (sequential loader behavior).
+  useEffect(() => {
+    if (!api) return
+    if (runtimeGateStage !== 'owner') return
+    markAssembly('Owner Index (SBF)', { status: 'loading' })
+    api.prepareOwnerIndex()
+      .then((resp) => {
+        if (resp?.ok) {
+          markAssembly('Owner Index (SBF)', { status: 'done', rowCount: Number(resp.rowCount ?? 0) || 0 })
+          setRuntimeGateStage('done')
+        } else {
+          markAssembly('Owner Index (SBF)', { status: 'error', rowCount: 0, errorMsg: resp?.error ?? 'Owner index unavailable' })
+          setRuntimeGateStage('done')
+        }
+      })
+      .catch((err) => {
+        markAssembly('Owner Index (SBF)', { status: 'error', rowCount: 0, errorMsg: err instanceof Error ? err.message : String(err) })
+        setRuntimeGateStage('done')
+      })
+  }, [api, markAssembly, runtimeGateStage])
+
+  // If SBF CSVs are missing, attempt the one-time XLSX -> CSV conversion automatically.
+  useEffect(() => {
+    if (!api || !loadProgress || sbfRepairAttemptedRef.current) return
+    const sbfStep = loadProgress.steps.find(step => step.datasetName.toLowerCase().includes('secured basic file'))
+      ?? loadProgress.steps.find(step => step.datasetName.toLowerCase().includes('(sbf)'))
+    if (!sbfStep || sbfStep.status !== 'error') return
+    sbfRepairAttemptedRef.current = true
+    api.convertSbfXlsxToCsv()
+      .then(async (result) => {
+        if (result?.ok) {
+          const next = await api.getDataLoadProgress().catch(() => null)
+          if (next) setLoadProgress(next)
+          // Now that CSVs exist, rebuild/prepare the owner index.
+          markAssembly('Owner Index (SBF)', { status: 'loading', rowCount: 0 })
+          api.prepareOwnerIndex()
+            .then((resp) => {
+              if (resp?.ok) markAssembly('Owner Index (SBF)', { status: 'done', rowCount: Number(resp.rowCount ?? 0) || 0 })
+              else markAssembly('Owner Index (SBF)', { status: 'error', errorMsg: resp?.error ?? 'Owner index unavailable' })
+            })
+            .catch((err) => markAssembly('Owner Index (SBF)', { status: 'error', errorMsg: err instanceof Error ? err.message : String(err) }))
+        }
+      })
+      .catch(() => undefined)
+  }, [api, loadProgress, markAssembly])
+
+  useEffect(() => () => {
+    if (viewportReloadRef.current != null) window.clearTimeout(viewportReloadRef.current)
+  }, [])
+
+  // Selected parcel lng/lat for 3D glow
+  const selectedLngLat: [number, number] | null = selectedParcel?.longitude && selectedParcel?.latitude
+    ? [selectedParcel.longitude, selectedParcel.latitude]
+    : null
+
+  // 3D Photorealistic Tiles overlay with ALL 3DBuild.md features
+  useDeck3DOverlay({
+    map: mapInstance,
+    enabled: is3D,
+    clayMode,
+    selectedParcelLngLat: selectedLngLat,
+    selectedParcelGeometry,
+    buildRuns,
+    sunAnalysis: sunAnalysisForShadow,
+    onSlopeHover: (deg, pos) => setSlopeHover({ deg, pos })
+  })
+
+  // Fetch terrain metrics when a parcel is selected
+  useEffect(() => {
+    if (api && selectedParcel?.latitude && selectedParcel?.longitude) {
+      api.getTerrainMetrics(
+        selectedParcel.assessorId,
+        selectedParcel.latitude,
+        selectedParcel.longitude,
+        selectedParcel.squareFootage || 5000,
+        selectedParcelGeometry
+      )
+        .then((resp: TerrainMetricsResponse) => {
+          setTerrainMetrics(resp.metrics ?? null)
+          setTerrainStatus(resp.computed ? { computed: true } : { computed: false, reason: resp.reason })
+        })
+        .catch((err) => {
+          setTerrainMetrics(null)
+          setTerrainStatus({ computed: false, reason: err instanceof Error ? err.message : String(err) })
+        })
+    }
+  }, [api, selectedParcel?.assessorId, selectedParcelGeometry])
+
+  // Plan 03: topographic overlay over the 2D map using the persisted terrain surface grid.
+  useEffect(() => {
+    if (!api || !visualSettings.showTopoOverlay || !selectedParcel) {
+      setTopoOverlayData(null)
+      return
+    }
+    const parcelId = selectedParcel.ain || selectedParcel.assessorId.replace(/[^0-9]/g, '')
+    api.getTerrainProduct(parcelId)
+      .then((product) => setTopoOverlayData(product))
+      .catch(() => setTopoOverlayData(null))
+  }, [api, visualSettings.showTopoOverlay, selectedParcel?.assessorId, selectedParcel?.ain])
+
+  // Sun analysis used for shadows v1 (terrain-only, non-fake; cached/persisted in main).
+  useEffect(() => {
+    if (!api || !showSun || !selectedParcel?.latitude || !selectedParcel?.longitude) {
+      setSunAnalysisForShadow(null)
+      return
+    }
+    const year = new Date().getFullYear()
+    const date = `${year}-06-21`
+    api.getSunAnalysis(selectedParcel.assessorId, selectedParcel.latitude, selectedParcel.longitude, date)
+      .then((resp: SunAnalysisResponse) => {
+        if (resp?.computed && resp.analysis) setSunAnalysisForShadow(resp.analysis)
+        else setSunAnalysisForShadow(null)
+      })
+      .catch(() => setSunAnalysisForShadow(null))
+  }, [api, showSun, selectedParcel?.assessorId, selectedParcel?.latitude, selectedParcel?.longitude])
+
+  useEffect(() => {
+    if (!api || !selectedParcel) return
+    api.getBuildRunsForParcel(selectedParcel.assessorId)
+      .then(runs => setBuildRuns(runs.slice(0, 25)))
+      .catch(() => setBuildRuns([]))
+  }, [api, selectedParcel?.assessorId])
+
+  useEffect(() => {
+    if (!api || !selectedParcel?.ain) {
+      setSelectedParcelGeometry(null)
+      return
+    }
+    api.getParcelPolygonByAin(selectedParcel.ain)
+      .then((poly) => setSelectedParcelGeometry(poly?.geometry ?? null))
+      .catch(() => setSelectedParcelGeometry(null))
+  }, [api, selectedParcel?.ain])
+
+  // Plan 02: geometric sqft + neighbor median sqft triple-check (parcel-polygon-aware, persisted).
+  useEffect(() => {
+    if (!api || !selectedParcel?.ain) return
+    const parcelId = selectedParcel.ain || selectedParcel.assessorId.replace(/[^0-9]/g, '')
+    api.getSqftCheck(parcelId, selectedParcel.ain, selectedParcel.squareFootage || 0)
+      .then((resp) => {
+        setSelectedParcel((current) => {
+          if (!current) return current
+          return {
+            ...current,
+            geometricSqft: resp.geometricSqft,
+            neighborMedianSqft: resp.neighborMedianSqft,
+            sqftCheckStatus: resp.status
+          }
+        })
+      })
+      .catch(() => undefined)
+  }, [api, selectedParcel?.ain, selectedParcel?.squareFootage, selectedParcel?.assessorId])
+
+  useEffect(() => {
+    if (!api) return
+    if (!visualSettings.showHeatOverlay) {
+      setHeatCells([])
+      return
+    }
+    api.getHeatMapData(2)
+      .then((cells) => setHeatCells(Array.isArray(cells) ? cells : []))
+      .catch(() => setHeatCells([]))
+  }, [api, visualSettings.showHeatOverlay])
 
   // Load data
-  const loadData = useCallback(async () => {
-    setLoading(true)
+  const loadData = useCallback(async (filterQuery: ParcelFilterQuery, showAssembly = true) => {
+    const signature = parcelLoadSignature(filterQuery)
+    if (signature === activeLoadSignatureRef.current || signature === lastCompletedLoadSignatureRef.current) {
+      return
+    }
+    if (loadInFlightRef.current) {
+      queuedLoadRef.current = { filterQuery, showAssembly }
+      return
+    }
+    loadInFlightRef.current = true
+    activeLoadSignatureRef.current = signature
+    if (showAssembly) setLoading(true)
     setError(null)
+    markAssembly('Parcel Records', { status: 'loading', rowCount: 0 })
     try {
-      const data = await window.rentSeeker.queryParcelCsv(
-        CSV_PATH,
-        TARGET_PARCELS,
-        MAX_SURROUNDING
-      )
+      if (!api) throw new Error('RentSeeker desktop API is unavailable. Open the Electron app window, not the raw Vite URL.')
+      const data = await api.queryParcelFiltered(filterQuery)
       setResult(data)
-      if (data.targetParcels && data.targetParcels.length > 0) {
-        setSelectedParcel(data.targetParcels[0])
+      markAssembly('Parcel Records', { status: 'done', rowCount: Number(data?.returnedCount ?? data?.allParcels?.length ?? 0) || 0 })
+      if (!captureOnceRef.current.records && api?.captureMainWindow) {
+        captureOnceRef.current.records = true
+        api.captureMainWindow().then((r) => {
+          if (r?.ok && r.path) console.log('[capture] records:', r.path)
+        }).catch(() => undefined)
+      }
+      setRuntimeGateStage('owner')
+      if (!selectedParcel && data.allParcels?.length > 0) {
+        const first = data.targetParcels[0] ?? data.allParcels[0]
+        setSelectedParcel(first)
+        setSelectedParcelIds(new Set(parcelRecordKeys(first)))
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+      markAssembly('Parcel Records', { status: 'error', errorMsg: err instanceof Error ? err.message : String(err) })
+      setRuntimeGateStage('owner')
     } finally {
-      setLoading(false)
+      if (showAssembly) setLoading(false)
+      if (firstLoadRef.current) {
+        firstLoadRef.current = false
+      }
+      loadInFlightRef.current = false
+      lastCompletedLoadSignatureRef.current = activeLoadSignatureRef.current
+      activeLoadSignatureRef.current = null
+      const queued = queuedLoadRef.current
+      queuedLoadRef.current = null
+      if (queued) {
+        void loadData(queued.filterQuery, queued.showAssembly)
+      }
     }
+  }, [api, markAssembly, parcelLoadSignature, selectedParcel])
+
+  // Initial load
+  useEffect(() => {
+    if (!firstLoadRef.current) return
+    if (runtimeGateStage !== 'records') return
+    void loadData(filter)
+  }, [runtimeGateStage])
+
+  // Filter change handler (with count check)
+  const handleFilterChange = useCallback(async (newFilter: ParcelFilterQuery) => {
+    setFilter(newFilter)
+    // Strict sequential startup: do not start querying parcel records until boundaries are visible and
+    // the runtime gate has advanced into the records stage (or later).
+    if (runtimeGateStage === 'basemap' || runtimeGateStage === 'boundaries') return
+
+    // Check count for large queries
+    try {
+      if (!api) throw new Error('RentSeeker desktop API is unavailable')
+      const count = await api.countParcels(newFilter)
+      if (count > 100000) {
+        setPendingCount(count)
+        setPendingFilter(newFilter)
+        return
+      }
+    } catch {
+      // Count failed, just load
+    }
+
+    void loadData({
+      ...newFilter,
+      limit: 500,
+      includeCofO: showCofO,
+      includeBuildingPermits: showBuildingPermits,
+      includeElectricalPermits: showElectricalPermits,
+      includeSubmittedPermits: showSubmittedPermits,
+      includeInspections: showInspections
+    })
+  }, [api, loadData, runtimeGateStage, showCofO, showBuildingPermits, showElectricalPermits, showSubmittedPermits, showInspections])
+
+  // Confirm large query
+  const confirmLargeQuery = useCallback(() => {
+    if (pendingFilter) {
+      void loadData({
+        ...pendingFilter,
+        limit: 500,
+        includeCofO: showCofO,
+        includeBuildingPermits: showBuildingPermits,
+        includeElectricalPermits: showElectricalPermits,
+        includeSubmittedPermits: showSubmittedPermits,
+        includeInspections: showInspections
+      })
+    }
+    setPendingCount(null)
+    setPendingFilter(null)
+  }, [pendingFilter, loadData, showCofO, showBuildingPermits, showElectricalPermits, showSubmittedPermits, showInspections])
+
+  // Toggle C-of-O
+  const handleToggleCofO = useCallback((v: boolean) => {
+    setShowCofO(v)
+    if (runtimeGateStage === 'basemap' || runtimeGateStage === 'boundaries') return
+    void loadData({ ...filter, includeCofO: v })
+  }, [filter, loadData, runtimeGateStage])
+
+  const reloadWithDatasetToggles = useCallback((patch: Partial<ParcelFilterQuery>) => {
+    const next = {
+      ...filter,
+      includeCofO: showCofO,
+      includeBuildingPermits: showBuildingPermits,
+      includeElectricalPermits: showElectricalPermits,
+      includeSubmittedPermits: showSubmittedPermits,
+      includeInspections: showInspections,
+      ...patch
+    }
+    setFilter(next)
+    if (runtimeGateStage === 'basemap' || runtimeGateStage === 'boundaries') return
+    void loadData(next)
+  }, [filter, loadData, runtimeGateStage, showCofO, showBuildingPermits, showElectricalPermits, showSubmittedPermits, showInspections])
+
+  const handleBoundaryStats = useCallback((visibleCount: number, renderedCount: number, complete: boolean, suppressed: boolean) => {
+    setBoundariesSuppressedForDensity(suppressed)
+    setVisibleBoundaryCount(suppressed ? 0 : visibleCount)
+    setRenderedBoundaryCount(renderedCount)
+    setBoundaryComplete(complete)
+    if (pmtilesReady && (visibleCount > 0 || suppressed)) {
+      markAssembly('Parcel Boundary Lines', { status: 'done', rowCount: visibleCount })
+      if (!captureOnceRef.current.boundaries && api?.captureMainWindow) {
+        captureOnceRef.current.boundaries = true
+        api.captureMainWindow().then((r) => {
+          if (r?.ok && r.path) console.log('[capture] boundaries:', r.path)
+        }).catch(() => undefined)
+      }
+      if (runtimeGateStage === 'boundaries') {
+        markAssembly('Parcel Records', { status: 'loading', rowCount: 0 })
+        setRuntimeGateStage('records')
+      }
+    }
+  }, [api, pmtilesReady, markAssembly, runtimeGateStage])
+
+  const refreshViewportRecords = useCallback((bounds: MapBounds) => {
+    setViewportRefreshCount((n) => n + 1)
+    const next = {
+      ...filter,
+      bounds,
+      targetParcels: undefined,
+      limit: 500,
+      randomSample: true,
+      includeCofO: showCofO,
+      includeBuildingPermits: showBuildingPermits,
+      includeElectricalPermits: showElectricalPermits,
+      includeSubmittedPermits: showSubmittedPermits,
+      includeInspections: showInspections
+    }
+    setFilter(next)
+    // Strict sequential startup: do not query records until boundaries are actually visible and the
+    // runtime gate has advanced into the records stage (or later).
+    if (runtimeGateStage === 'basemap' || runtimeGateStage === 'boundaries') return
+    if (viewportReloadRef.current != null) window.clearTimeout(viewportReloadRef.current)
+    viewportReloadRef.current = window.setTimeout(() => {
+      void loadData(next, false)
+    }, 250)
+  }, [api, filter, loadData, runtimeGateStage, showCofO, showBuildingPermits, showElectricalPermits, showSubmittedPermits, showInspections])
+
+  const handleSelectParcelByKey = useCallback(async (parcelKey: string, polygon?: ParcelPolygon | null) => {
+    if (polygon) setPolygonInteractionOk(true)
+    setSelectedParcelIds(new Set(polygon ? parcelPolygonKeys(polygon) : [parcelKey]))
+    if (polygon) setSelectedGroupPolygons([polygon])
+    try {
+      if (!api) throw new Error('RentSeeker desktop API is unavailable')
+      const pool = warmParcelPoolRef.current
+      const normalized = parcelKey.replace(/[^0-9]/g, '')
+      const pooled = pool.get(parcelKey) ?? pool.get(normalized)
+      if (pooled) {
+        setResult(current => mergeParcelIntoResult(current, pooled))
+        setSelectedParcel(pooled)
+        setSelectedParcelIds(new Set([...parcelRecordKeys(pooled), ...(polygon ? parcelPolygonKeys(polygon) : [])]))
+        return
+      }
+      const data = await api.queryParcelFiltered({
+        targetParcels: parcelKey,
+        limit: 1,
+        includeCofO: showCofO,
+        includeBuildingPermits: showBuildingPermits,
+        includeElectricalPermits: showElectricalPermits,
+        includeSubmittedPermits: showSubmittedPermits,
+        includeInspections: showInspections
+      })
+      const parcel = data.targetParcels[0] ?? data.allParcels[0]
+      if (parcel) {
+        setResult(current => mergeParcelIntoResult(current, parcel))
+        setSelectedParcel(parcel)
+        setSelectedParcelIds(new Set([...parcelRecordKeys(parcel), ...(polygon ? parcelPolygonKeys(polygon) : [])]))
+      }
+    } catch {
+      // Keep the geometry selection even if the enriched dossier lookup fails.
+    }
+  }, [api, showCofO, showBuildingPermits, showElectricalPermits, showSubmittedPermits, showInspections])
+
+  const handleGroupSelect = useCallback((polygons: ParcelPolygon[], mode: ParcelSelectionMode) => {
+    setIsDrawing(false)
+    if (polygons.length > 0) setPolygonInteractionOk(true)
+    const nextKeys = new Set(polygons.flatMap(parcelPolygonKeys))
+    setSelectedParcelIds(current => {
+      if (mode === 'add') return new Set([...current, ...nextKeys])
+      if (mode === 'subtract') {
+        const reduced = new Set(current)
+        nextKeys.forEach(key => reduced.delete(key))
+        return reduced
+      }
+      return nextKeys
+    })
+    setSelectedGroupPolygons(current => {
+      if (mode === 'add') {
+        const byKey = new Map<string, ParcelPolygon>()
+        current.forEach(poly => byKey.set(parcelPolygonKeys(poly)[0], poly))
+        polygons.forEach(poly => byKey.set(parcelPolygonKeys(poly)[0], poly))
+        return [...byKey.values()]
+      }
+      if (mode === 'subtract') {
+        return current.filter(poly => !parcelPolygonKeys(poly).some(key => nextKeys.has(key)))
+      }
+      return polygons
+    })
+    const first = polygons[0]
+    if (first && mode !== 'subtract') void handleSelectParcelByKey(first.ain || first.apn, first)
+  }, [handleSelectParcelByKey])
+
+  const clearGroupSelection = useCallback(() => {
+    setSelectedParcelIds(new Set())
+    setSelectedGroupPolygons([])
   }, [])
 
-  useEffect(() => { void loadData() }, [loadData])
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsDrawing(false)
+        clearGroupSelection()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [clearGroupSelection])
 
   // Target IDs for map markers
   const targetIds = useMemo(() => {
@@ -558,8 +3280,8 @@ export function ParcelExplorer() {
     return result.targetParcels.map(p => p.assessorId)
   }, [result])
 
-  // Filtered parcels
-  const filteredParcels = useMemo(() => {
+  // All displayed parcels
+  const displayedParcels = useMemo(() => {
     if (!result) return []
     if (!searchText.trim()) return result.allParcels
 
@@ -578,46 +3300,101 @@ export function ParcelExplorer() {
     })
   }, [result, searchText])
 
+  // Dataset counts
+  const datasetCounts = useMemo(() => {
+    const parcels = displayedParcels
+    const hasSource = (parcel: ParcelRecord, source: DataSource) => parcel.dataSources?.includes(source) ?? false
+    return {
+      parcel: parcels.filter(p => hasSource(p, 'parcel')).length,
+      owner: parcels.filter(p => p.ain).length,
+      cofo: parcels.filter(p => hasSource(p, 'cofo')).length,
+      both: parcels.filter(p => p.dataSource === 'both').length,
+      buildingPermit: parcels.filter(p => hasSource(p, 'building_permit')).length,
+      electricalPermit: parcels.filter(p => hasSource(p, 'electrical_permit')).length,
+      submittedPermit: parcels.filter(p => hasSource(p, 'building_permit_submitted')).length,
+      inspection: parcels.filter(p => hasSource(p, 'inspection')).length
+    }
+  }, [displayedParcels, ownerParcelAins])
+
+  const datasetTotals = useMemo(() => {
+    const totals: Record<string, number> = {}
+    for (const step of loadProgress?.steps ?? []) totals[step.datasetName] = step.rowCount
+    return totals
+  }, [loadProgress])
+
+  const totalParcelUniverse = datasetTotals['LA County Assessor Parcels'] ?? result?.totalFound ?? 0
+  const loadedRecordCount = result?.returnedCount ?? displayedParcels.length
+
   // Max value for bar normalization
   const maxTotalValue = useMemo(() => {
-    if (!filteredParcels.length) return 1
-    return Math.max(...filteredParcels.map(p => p.totalValue), 1)
-  }, [filteredParcels])
+    if (!displayedParcels.length) return 1
+    return Math.max(...displayedParcels.map(p => p.totalValue), 1)
+  }, [displayedParcels])
 
-  // Select handler for map
+  // Select handler
   const handleSelectParcel = useCallback((parcel: ParcelRecord) => {
     setSelectedParcel(parcel)
-    // Scroll the bottom bar to show the selected card
+    setSelectedParcelIds(new Set(parcelRecordKeys(parcel)))
     const el = document.getElementById(`card-${parcel.assessorId}`)
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
   }, [])
 
-  /* ---------- LOADING ---------- */
-  if (loading) {
-    return (
-      <div className="parcel-explorer">
-        <div className="pe-ambient-grid" />
-        <div className="pe-loading">
-          <div className="pe-loading-spinner" />
-          <div className="pe-loading-text">QUERYING 9.6M ROWS</div>
-          <div className="pe-loading-subtext">
-            DuckDB scanning Assessor CSV for books 5560 & 5556…
-          </div>
-        </div>
-      </div>
-    )
-  }
+  const handleBuildRunComplete = useCallback((run: BuildRunOutput) => {
+    setBuildRuns(prev => [run, ...prev.filter(item => item.runId !== run.runId)].slice(0, 25))
+    setIs3D(true)
+  }, [])
+
+  const handleSelectOwner = useCallback(async (ownerName: string) => {
+    setSelectedOwnerName(ownerName)
+    setShowAnalytics(false)
+    try {
+      if (!api) throw new Error('RentSeeker desktop API is unavailable')
+      const portfolio = await api.getOwnerPortfolio(ownerName, 1000)
+      const ains = new Set(portfolio.parcels.map((parcel) => parcel.ain).filter(Boolean))
+      setOwnerParcelAins(ains)
+      const coords = portfolio.parcels
+        .map((p) => ({ lat: p.latitude, lng: p.longitude }))
+        .filter((p) => typeof p.lat === 'number' && typeof p.lng === 'number' && p.lat !== 0 && p.lng !== 0)
+      if (mapInstance && coords.length >= 2) {
+        const bounds = new maplibregl.LngLatBounds()
+        coords.forEach((p) => bounds.extend([p.lng!, p.lat!]))
+        if (!bounds.isEmpty()) {
+          mapInstance.fitBounds(bounds, { padding: 92, maxZoom: 14, duration: 900 })
+        }
+      } else if (mapInstance && coords.length === 1) {
+        mapInstance.flyTo({ center: [coords[0].lng!, coords[0].lat!], zoom: Math.max(mapInstance.getZoom(), 13), duration: 900 })
+      }
+    } catch {
+      setOwnerParcelAins(new Set())
+    }
+  }, [api, mapInstance])
+
+  const assemblyAllDone = useMemo(() => {
+    const essential = new Set(['Basemap', 'Parcel Boundary Lines', 'Parcel Records', 'Owner Index (SBF)'])
+    const essentialDone = assemblySteps
+      .filter(step => essential.has(step.datasetName))
+      .every(step => step.status === 'done' || step.status === 'error')
+    return essentialDone
+  }, [assemblySteps])
+
+  useEffect(() => {
+    if (!assemblyAllDone) return
+    const panels = assemblySteps.find(step => step.datasetName === 'Panels')
+    if (panels && panels.status === 'done') return
+    markAssembly('Panels', { status: 'done' })
+    // Fade out the assembly overlay quickly once the surface is genuinely ready.
+    window.setTimeout(() => setAssembling(false), 280)
+  }, [assemblyAllDone, assemblySteps, markAssembly])
 
   /* ---------- ERROR ---------- */
-  if (error) {
+  if (error && !loading) {
     return (
       <div className="parcel-explorer">
-        <div className="pe-ambient-grid" />
         <div className="pe-error">
           <div className="pe-error-icon">⚠</div>
           <h2>Query Failed</h2>
           <p>{error}</p>
-          <button className="pe-error-retry" onClick={loadData}>RETRY QUERY</button>
+          <button className="pe-error-retry" onClick={() => loadData(filter)}>RETRY QUERY</button>
         </div>
       </div>
     )
@@ -625,7 +3402,15 @@ export function ParcelExplorer() {
 
   /* ---------- MAIN LAYOUT ---------- */
   return (
-    <div className="parcel-explorer">
+    <div
+      className={`parcel-explorer ${dropActive ? 'drop-active' : ''} ${importingData ? 'importing-data' : ''}`}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      <div className="pe-ambient-grid" />
+
       {/* Custom Cursor */}
       <div className="pe-cursor-dot" ref={dotRef} />
       <div className={`pe-cursor-ring ${hovering ? 'hovering' : ''}`} ref={ringRef} />
@@ -641,7 +3426,7 @@ export function ParcelExplorer() {
         <div className="pe-header-center">
           <input
             className="pe-search-input"
-            placeholder="Filter by APN, address, legal description…"
+            placeholder="Filter by APN, address, legal description..."
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
           />
@@ -649,37 +3434,176 @@ export function ParcelExplorer() {
         <div className="pe-header-status">
           <div className="pe-status-pill">
             <div className="pe-status-dot" />
-            {result?.totalFound ?? 0} parcels
+            Total parcels indexed: {formatCompact(totalParcelUniverse)}
           </div>
+          <div className="pe-status-pill">
+            <div className="pe-status-dot" />
+            Visible parcel lines: {visibleBoundaryCount.toLocaleString()}
+          </div>
+          {boundariesSuppressedForDensity && (
+            <div className="pe-time-pill">
+              Parcel lines hidden (too many in view) · zoom in for exact boundaries
+            </div>
+          )}
+          {pmtilesStats && (
+            <div className="pe-time-pill">
+              PMTiles: {pmtilesStats.tiles.toLocaleString()} tiles · {(pmtilesStats.totalMs / Math.max(1, pmtilesStats.tiles)).toFixed(0)}ms avg
+            </div>
+          )}
+          {pmtilesStatsDetailed && (
+            <div className="pe-time-pill">
+              PMTiles I/O: {Number(pmtilesStatsDetailed.avgIoMs ?? 0).toFixed(0)}ms · gunzip: {Number(pmtilesStatsDetailed.avgGunzipMs ?? 0).toFixed(0)}ms · cache: {Number(pmtilesStatsDetailed.cacheHitPct ?? 0).toFixed(0)}% · p95: {Number(pmtilesStatsDetailed.p95TotalMs ?? 0).toFixed(0)}ms
+            </div>
+          )}
           {result && (
             <div className="pe-time-pill">
-              Query: {result.queryTimeMs}ms
+              Loaded parcel records: {loadedRecordCount.toLocaleString()} · {result.queryTimeMs}ms
+            </div>
+          )}
+          {importingData && (
+            <div className="pe-time-pill warning">
+              Importing folder data…
+            </div>
+          )}
+          {!boundaryComplete && (
+            <div className="pe-time-pill warning">
+              {renderedBoundaryCount.toLocaleString()} rendered
             </div>
           )}
         </div>
+        <div className="pe-header-right">
+          <button
+            className={`pe-folder-toggle ${dropActive ? 'active' : ''}`}
+            onClick={() => void pickImportFolder()}
+            title="Add data folder"
+          >
+            FOLDER
+          </button>
+          <button
+            className={`pe-visual-toggle ${showVisualSettings ? 'active' : ''}`}
+            onClick={() => setShowVisualSettings(current => !current)}
+            title="Visual settings"
+          >
+            VIS
+          </button>
+          <button
+            className={`pe-propstream-toggle ${showPropstreamGrid ? 'active' : ''}`}
+            onClick={() => setShowPropstreamGrid(current => !current)}
+            title="PropStream grid"
+          >
+            PROP
+          </button>
+          <AnalyticsToggleButton active={showAnalytics} onToggle={() => setShowAnalytics(!showAnalytics)} />
+          <BuildToggleButton active={showBuild} onToggle={() => setShowBuild(!showBuild)} />
+          <SunToggleButton active={showSun} onToggle={() => setShowSun(!showSun)} />
+          <ViewToggleButton active={showView} onToggle={() => setShowView(!showView)} />
+          <ClayModeToggle clayMode={clayMode} onToggle={() => setClayMode(!clayMode)} visible={is3D} />
+          <Toggle3DButton enabled={is3D} onToggle={() => setIs3D(!is3D)} />
+        </div>
       </div>
+
+      {showVisualSettings && (
+        <VisualSettingsMenu
+          settings={visualSettings}
+          onChange={setVisualSettings}
+          onClose={() => setShowVisualSettings(false)}
+          pmtilesInfo={pmtilesInfo}
+          pmtilesSourceLayer={pmtilesSourceLayer}
+          pmtilesReady={pmtilesReady}
+        />
+      )}
+
+      {/* FILTER BAR (below header) */}
+      <FilterBar
+        filter={filter}
+        onFilterChange={handleFilterChange}
+        onDrawBoundary={() => setIsDrawing(!isDrawing)}
+        isDrawing={isDrawing}
+        resultCount={result?.totalFound ?? 0}
+        queryTimeMs={result?.queryTimeMs ?? 0}
+      />
+
+      {/* DATASET LEGEND (top right, floats over map) */}
+      <DatasetLegend
+        showCofO={showCofO}
+        onToggleCofO={handleToggleCofO}
+        showBuilding={showBuildingPermits}
+        onToggleBuilding={(v) => { setShowBuildingPermits(v); reloadWithDatasetToggles({ includeBuildingPermits: v }) }}
+        showElectrical={showElectricalPermits}
+        onToggleElectrical={(v) => { setShowElectricalPermits(v); reloadWithDatasetToggles({ includeElectricalPermits: v }) }}
+        showSubmitted={showSubmittedPermits}
+        onToggleSubmitted={(v) => { setShowSubmittedPermits(v); reloadWithDatasetToggles({ includeSubmittedPermits: v }) }}
+        showInspections={showInspections}
+        onToggleInspections={(v) => { setShowInspections(v); reloadWithDatasetToggles({ includeInspections: v }) }}
+        showPolygons={showPolygons}
+        onTogglePolygons={setShowPolygons}
+        parcelCount={datasetCounts.parcel}
+        ownerCount={datasetCounts.owner}
+        cofOCount={datasetCounts.cofo}
+        bothCount={datasetCounts.both}
+        buildingPermitCount={datasetCounts.buildingPermit}
+        electricalPermitCount={datasetCounts.electricalPermit}
+        submittedPermitCount={datasetCounts.submittedPermit}
+        inspectionCount={datasetCounts.inspection}
+        datasetTotals={datasetTotals}
+        manifestSteps={loadProgress?.steps ?? []}
+      />
 
       {/* MAP (main area) */}
       <MapView
-        parcels={filteredParcels}
+        parcels={displayedParcels}
         targetIds={targetIds}
+        ownerAins={ownerParcelAins}
+        heatCells={heatCells}
+        selectedParcelIds={selectedParcelIds}
+        showPolygons={showPolygons}
+        visualSettings={visualSettings}
         selectedParcel={selectedParcel}
+        terrainMetrics={terrainMetrics}
+        topoOverlayData={topoOverlayData}
         onSelectParcel={handleSelectParcel}
+        onSelectParcelByKey={handleSelectParcelByKey}
+        isDrawing={isDrawing}
+        onGroupSelect={handleGroupSelect}
+        onViewportChange={refreshViewportRecords}
+        onBoundaryStats={handleBoundaryStats}
+        onMapReady={setMapInstance}
+        onBasemapReady={() => {
+          markAssembly('Basemap', { status: 'done' })
+          markAssembly('Parcel Boundary Lines', { status: 'loading' })
+          setPmtilesReady(false)
+          setRuntimeGateStage('boundaries')
+        }}
+        onBoundariesReady={() => {
+          // First tile served. Do not mark "ready" until we can see rendered boundaries in the viewport.
+          setPmtilesReady(true)
+        }}
+      />
+
+      <SelectionGroupPanel
+        polygons={selectedGroupPolygons}
+        selectedIds={selectedParcelIds}
+        records={displayedParcels}
+        onActivate={handleSelectParcelByKey}
+        onClear={clearGroupSelection}
       />
 
       {/* BOTTOM BAR */}
       <div className="pe-bottom-bar">
         <div className="pe-bottom-bar-header">
           <div className="pe-bottom-bar-title">Parcel Conveyor</div>
-          <div className="pe-bottom-bar-count">{filteredParcels.length} records</div>
+          <div className="pe-bottom-bar-count">
+            Loaded parcel records: {loadedRecordCount.toLocaleString()}
+          </div>
         </div>
         <div className="pe-bottom-scroll-area">
-          {filteredParcels.map((parcel, index) => (
+          {displayedParcels.map((parcel, index) => (
             <div key={parcel.assessorId} id={`card-${parcel.assessorId}`}>
               <ParcelCard
                 parcel={parcel}
                 isTarget={targetIds.includes(parcel.assessorId)}
-                isSelected={parcel.assessorId === selectedParcel?.assessorId}
+                isSelected={parcel.assessorId === selectedParcel?.assessorId || parcelRecordKeys(parcel).some(key => selectedParcelIds.has(key))}
+                isOwnerParcel={ownerParcelAins.has(parcel.ain)}
                 index={index}
                 maxTotalValue={maxTotalValue}
                 onSelect={handleSelectParcel}
@@ -692,7 +3616,106 @@ export function ParcelExplorer() {
       </div>
 
       {/* DOSSIER SIDEBAR */}
-      <DossierPanel parcel={selectedParcel} />
+      <DossierPanel parcel={selectedParcel} onSelectOwner={handleSelectOwner} />
+
+      {assembling && (
+        <LoadingCinema
+          steps={sequentializedSteps}
+          assembling
+        />
+      )}
+
+      <PropstreamGridPanel
+        api={api}
+        visible={showPropstreamGrid}
+        onClose={() => setShowPropstreamGrid(false)}
+      />
+
+      <AnalyticsSuite
+        visible={showAnalytics}
+        onClose={() => setShowAnalytics(false)}
+        onSelectOwner={handleSelectOwner}
+      />
+
+      {selectedOwnerName && ownerParcelAins.size > 0 && (
+        <div className="pe-owner-selection-badge">
+          Owner focus: {selectedOwnerName} · {ownerParcelAins.size} parcels
+          <button onClick={() => { setSelectedOwnerName(null); setOwnerParcelAins(new Set()) }}>Clear</button>
+        </div>
+      )}
+
+      {/* TERRAIN METRICS in dossier (if available) */}
+      {terrainMetrics && selectedParcel && (
+        <div className="pe-terrain-badge">
+          <span className="pe-terrain-slope">{terrainMetrics.bestFitSlopePct.toFixed(1)}% slope</span>
+          <span className="pe-terrain-relief">{terrainMetrics.demRelief.toFixed(0)}ft relief</span>
+          <span className="pe-terrain-aspect">{terrainMetrics.aspectDeg.toFixed(0)}° aspect</span>
+        </div>
+      )}
+      {!terrainMetrics && selectedParcel && terrainStatus && terrainStatus.computed === false && (
+        <div className="pe-terrain-badge warning">
+          <span className="pe-terrain-slope">Terrain: not computed</span>
+          <span className="pe-terrain-relief">{terrainStatus.reason ?? 'Unavailable'}</span>
+        </div>
+      )}
+
+      {selectedParcel && (
+        <div className="pe-feature-dock">
+          <button className={is3D ? 'active' : ''} onClick={() => setIs3D(current => !current)}>3D</button>
+          <button
+            className={visualSettings.showTopoOverlay ? 'active' : ''}
+            onClick={() => setVisualSettings(current => ({ ...current, showTopoOverlay: !current.showTopoOverlay }))}
+          >
+            TOPO
+          </button>
+          <button className={showBuild ? 'active' : ''} onClick={() => setShowBuild(current => !current)}>BUILD</button>
+          <button className={showSun ? 'active' : ''} onClick={() => setShowSun(current => !current)}>SUN</button>
+          <button className={showView ? 'active' : ''} onClick={() => setShowView(current => !current)}>VIEW</button>
+        </div>
+      )}
+
+      {/* SUN SIMULATOR OVERLAY */}
+      <SunOverlay
+        parcelId={selectedParcel?.assessorId ?? null}
+        lat={selectedParcel?.latitude ?? null}
+        lng={selectedParcel?.longitude ?? null}
+        visible={showSun}
+        onClose={() => setShowSun(false)}
+      />
+
+      {/* VIEW ANALYSIS OVERLAY */}
+      <ViewOverlay
+        parcelId={selectedParcel?.assessorId ?? null}
+        lat={selectedParcel?.latitude ?? null}
+        lng={selectedParcel?.longitude ?? null}
+        visible={showView}
+        onClose={() => setShowView(false)}
+      />
+
+      {/* BUILD SIMULATOR PANEL */}
+      <BuildPanel
+        parcelId={selectedParcel?.assessorId ?? null}
+        lat={selectedParcel?.latitude ?? null}
+        lng={selectedParcel?.longitude ?? null}
+        useCode={selectedParcel?.propertyUseCode ?? null}
+        squareFootage={selectedParcel?.squareFootage ?? null}
+        terrainMetrics={terrainMetrics}
+        visible={showBuild}
+        onClose={() => setShowBuild(false)}
+        onRunComplete={handleBuildRunComplete}
+      />
+
+      {/* SLOPE TOOLTIP (3D hover) */}
+      {is3D && <SlopeTooltip slopeDeg={slopeHover.deg} position={slopeHover.pos} />}
+
+      {/* Confirmation Modal */}
+      {pendingCount != null && (
+        <ConfirmModal
+          count={pendingCount}
+          onConfirm={confirmLargeQuery}
+          onCancel={() => { setPendingCount(null); setPendingFilter(null) }}
+        />
+      )}
     </div>
   )
 }
