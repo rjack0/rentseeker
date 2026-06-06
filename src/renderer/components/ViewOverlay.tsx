@@ -7,6 +7,7 @@
  */
 
 import { useState, useCallback, useEffect } from 'react'
+import type { Geometry } from 'geojson'
 import type { ViewAnalysis, ViewAnalysisResponse } from '@shared/types'
 
 const api = (window as any).rentSeeker
@@ -15,11 +16,12 @@ interface ViewOverlayProps {
   parcelId: string | null
   lat: number | null
   lng: number | null
+  parcelGeometry?: Geometry | null
   visible: boolean
   onClose: () => void
 }
 
-export function ViewOverlay({ parcelId, lat, lng, visible, onClose }: ViewOverlayProps) {
+export function ViewOverlay({ parcelId, lat, lng, parcelGeometry, visible, onClose }: ViewOverlayProps) {
   const [analysis, setAnalysis] = useState<ViewAnalysis | null>(null)
   const [loading, setLoading] = useState(false)
   const [notComputedReason, setNotComputedReason] = useState<string | null>(null)
@@ -29,7 +31,7 @@ export function ViewOverlay({ parcelId, lat, lng, visible, onClose }: ViewOverla
     if (!parcelId || !lat || !lng) return
     setLoading(true)
     try {
-      const resp = await api.getViewAnalysis(parcelId, lat, lng, stories) as ViewAnalysisResponse
+      const resp = await api.getViewAnalysis(parcelId, lat, lng, stories, parcelGeometry ?? null) as ViewAnalysisResponse
       if (resp?.computed && resp.analysis) {
         setAnalysis(resp.analysis)
         setNotComputedReason(null)
@@ -43,7 +45,7 @@ export function ViewOverlay({ parcelId, lat, lng, visible, onClose }: ViewOverla
       setNotComputedReason(err instanceof Error ? err.message : String(err))
     }
     setLoading(false)
-  }, [parcelId, lat, lng, stories])
+  }, [parcelId, lat, lng, parcelGeometry, stories])
 
   useEffect(() => {
     if (visible && parcelId) {

@@ -6,11 +6,8 @@
  * Implements:
  *   - Tile3DLayer with refineStrategy: REPLACE, high pointBudget
  *   - Clay/texture mode toggle
- *   - Selected parcel glow in 3D (polygon-first, centroid fallback)
+ *   - Selected parcel glow in 3D (polygon-first)
  *   - Build-run massing visualization (from persisted outputs)
- *
- * Notes:
- * - Slope-on-hover is best-effort: picked normals are not always exposed.
  */
 
 import { useEffect, useRef, useCallback, useState } from 'react'
@@ -19,7 +16,7 @@ import type { Geometry } from 'geojson'
 import type { BuildRunOutput, SunAnalysis } from '@shared/types'
 import { MapboxOverlay } from '@deck.gl/mapbox'
 import { Tile3DLayer } from '@deck.gl/geo-layers'
-import { PolygonLayer, ScatterplotLayer } from '@deck.gl/layers'
+import { PolygonLayer } from '@deck.gl/layers'
 
 /* ═══════════════ CONFIG ═══════════════ */
 
@@ -36,7 +33,6 @@ interface UseDeck3DOptions {
   map: maplibregl.Map | null
   enabled: boolean
   clayMode?: boolean
-  selectedParcelLngLat?: [number, number] | null
   selectedParcelGeometry?: Geometry | null
   buildRuns?: BuildRunOutput[]
   sunAnalysis?: SunAnalysis | null
@@ -48,7 +44,6 @@ export function useDeck3DOverlay({
   map,
   enabled,
   clayMode = false,
-  selectedParcelLngLat,
   selectedParcelGeometry,
   buildRuns = [],
   sunAnalysis,
@@ -140,7 +135,7 @@ export function useDeck3DOverlay({
       }
     }))
 
-    // Selected parcel glow (polygon-first, centroid fallback)
+    // Selected parcel glow (polygon-first)
     if (selectedParcelGeometry) {
       const asPolygons: Array<number[][]> = []
       if (selectedParcelGeometry.type === 'Polygon') {
@@ -169,22 +164,6 @@ export function useDeck3DOverlay({
           parameters: { depthTest: false }
         }))
       }
-    } else if (selectedParcelLngLat) {
-      layers.push(new ScatterplotLayer({
-        id: 'selected-parcel-glow-3d-fallback',
-        data: [{ position: [...selectedParcelLngLat, 0] }],
-        getPosition: (d: any) => d.position,
-        getRadius: 40,
-        radiusUnits: 'meters',
-        getFillColor: [0, 255, 200, 90],
-        getLineColor: [171, 255, 2, 230],
-        stroked: true,
-        filled: true,
-        getLineWidth: 2,
-        lineWidthUnits: 'meters',
-        beforeId: 'parcel-boundaries-line',
-        parameters: { depthTest: false }
-      }))
     }
 
     // Sun shadows v1: project a simple ground shadow from the selected parcel polygon.
@@ -269,7 +248,7 @@ export function useDeck3DOverlay({
     }
 
     return layers
-  }, [buildRuns, clayMode, selectedParcelGeometry, selectedParcelLngLat, sunAnalysis, shadowHeightFt])
+  }, [buildRuns, clayMode, selectedParcelGeometry, sunAnalysis, shadowHeightFt])
 
   // Activate 3D mode
   const activate3D = useCallback(async () => {
@@ -325,7 +304,7 @@ export function useDeck3DOverlay({
     if (!enabled || !deckReady || !overlayRef.current) return
     overlayRef.current.setProps({ layers: buildLayers() })
     prevClayMode.current = clayMode
-  }, [enabled, deckReady, clayMode, selectedParcelLngLat, selectedParcelGeometry, buildRuns, buildLayers])
+  }, [enabled, deckReady, clayMode, selectedParcelGeometry, buildRuns, buildLayers])
 
   // Cleanup on unmount
   useEffect(() => {

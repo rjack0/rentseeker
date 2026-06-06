@@ -8,7 +8,9 @@
  * The sun is the ONE bright element in the dark Industrial Theatre UI.
  */
 
+import type { Geometry } from 'geojson'
 import type { SunAnalysis, SunPosition } from '@shared/types'
+import { geometryFingerprint } from '@shared/sourceRegistry'
 import { sampleElevations } from './terrainEngine'
 import { rentSeekerStore } from './rentSeekerStore'
 
@@ -137,6 +139,24 @@ function calculateDaylight(lat: number, year: number, month: number, day: number
   }
 }
 
+function geometryCenter(geometry: Geometry): { lat: number; lng: number } | null {
+  const coords: Array<[number, number]> = []
+  if (geometry.type === 'Polygon') {
+    coords.push(...((geometry.coordinates?.[0] ?? []) as Array<[number, number]>))
+  } else if (geometry.type === 'MultiPolygon') {
+    for (const poly of geometry.coordinates ?? []) {
+      coords.push(...((poly?.[0] ?? []) as Array<[number, number]>))
+    }
+  }
+  if (coords.length === 0) return null
+  const sum = coords.reduce((acc, [lng, lat]) => {
+    acc.lat += lat
+    acc.lng += lng
+    return acc
+  }, { lat: 0, lng: 0 })
+  return { lat: sum.lat / coords.length, lng: sum.lng / coords.length }
+}
+
 /* ═══════════════ SHADOW ANALYSIS ═══════════════ */
 
 /**
@@ -200,8 +220,12 @@ export async function computeSunAnalysis(
   parcelId: string,
   lat: number,
   lng: number,
-  dateStr: string // YYYY-MM-DD
+  dateStr: string, // YYYY-MM-DD
+  parcelGeometry: Geometry | null = null
 ): Promise<SunAnalysis> {
+  const origin = parcelGeometry ? geometryCenter(parcelGeometry) ?? { lat, lng } : { lat, lng }
+  const originLat = origin.lat
+  const originLng = origin.lng
   const [year, month, day] = dateStr.split('-').map(Number)
   const tzOffset = -8 // PST (could be -7 for PDT)
 
@@ -209,7 +233,7 @@ export async function computeSunAnalysis(
   const sunPath: SunPosition[] = []
   for (let h = 5; h <= 20; h++) {
     for (const m of [0, 30]) {
-      const pos = sunPositionAtHour(lat, lng, year, month, day, h, m, tzOffset)
+      const pos = sunPositionAtHour(originLat, originLng, year, month, day, h, m, tzOffset)
       if (pos.altitudeDeg > -5) { // Include civil twilight
         sunPath.push(pos)
       }
@@ -217,10 +241,10 @@ export async function computeSunAnalysis(
   }
 
   // Calculate sunrise/sunset
-  const daylight = calculateDaylight(lat, year, month, day)
+  const daylight = calculateDaylight(originLat, year, month, day)
 
   // If elevation is unavailable, do not return fake outputs.
-  await sampleElevations(lat, lng, 10, 3)
+  await sampleElevations(originLat, originLng, 10, 3)
 
   // Check terrain obstruction for each hour of sunlight
   const hourlyObstruction: { hour: number; obstructionPct: number }[] = []
@@ -235,13 +259,13 @@ export async function computeSunAnalysis(
       continue
     }
 
-    const pos = sunPositionAtHour(lat, lng, year, month, day, h, 0, tzOffset)
+    const pos = sunPositionAtHour(originLat, originLng, year, month, day, h, 0, tzOffset)
     if (pos.altitudeDeg <= 0) {
       hourlyObstruction.push({ hour: h, obstructionPct: 1 })
       continue
     }
 
-    const check = await checkTerrainObstruction(lat, lng, pos.azimuthDeg, pos.altitudeDeg)
+    const check = await checkTerrainObstruction(originLat, originLng, pos.azimuthDeg, pos.altitudeDeg)
     if (check.obstructed) {
       hourlyObstruction.push({ hour: h, obstructionPct: 1 })
       obstructors.push({
@@ -258,8 +282,8 @@ export async function computeSunAnalysis(
   const analysis = {
     parcelId,
     date: dateStr,
-    latitude: lat,
-    longitude: lng,
+    latitude: originLat,
+    longitude: originLng,
     sunPath,
     sunriseHour: daylight.sunrise,
     sunsetHour: daylight.sunset,
@@ -268,7 +292,7 @@ export async function computeSunAnalysis(
     hourlyObstruction,
     obstructors
   }
-  await rentSeekerStore.recordSunAnalysis(analysis).catch((err) => {
+  await rentSeekerStore.recordSunAnalysis(analysis, geometryFingerprint(parcelGeometry)).catch((err) => {
     console.error('[SunSimulator] Failed to persist sun analysis:', err)
   })
   return analysis

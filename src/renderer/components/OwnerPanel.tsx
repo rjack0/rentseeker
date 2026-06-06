@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import type { OwnerRecord, OwnerPortfolio } from '@shared/types'
+import type { OwnerRecord, OwnerPortfolio, ParcelFactProvenance } from '@shared/types'
 
 const api = (window as any).rentSeeker
 
@@ -37,9 +37,10 @@ function fmtAcres(val: number): string {
 interface OwnerPanelProps {
   ain: string | null
   onSelectOwner: (ownerName: string) => void
+  provenance?: ParcelFactProvenance | null
 }
 
-export function OwnerPanel({ ain, onSelectOwner }: OwnerPanelProps) {
+export function OwnerPanel({ ain, onSelectOwner, provenance }: OwnerPanelProps) {
   const [owner, setOwner] = useState<OwnerRecord | null>(null)
   const [portfolio, setPortfolio] = useState<OwnerPortfolio | null>(null)
   const [showPortfolio, setShowPortfolio] = useState(false)
@@ -105,8 +106,16 @@ export function OwnerPanel({ ain, onSelectOwner }: OwnerPanelProps) {
       <div className="op-details">
         <div className="op-row op-source-row">
           <span className="op-label">Source</span>
-          <span className="op-value">Secured Basic File (SBF) · AIN {owner.ain}</span>
+          <span className="op-value" title={provenance?.matchKey ?? `AIN ${owner.ain}`}>
+            {provenance?.datasetName ?? 'Secured Basic File (SBF)'} · AIN {owner.ain}
+          </span>
         </div>
+        {provenance && (
+          <div className="op-row op-source-row">
+            <span className="op-label">Fields</span>
+            <span className="op-value">{provenance.sourceFields.join(', ')}</span>
+          </div>
+        )}
         <div className="op-row">
           <span className="op-label">Address</span>
           <span className="op-value">{owner.situsAddress || '—'}</span>

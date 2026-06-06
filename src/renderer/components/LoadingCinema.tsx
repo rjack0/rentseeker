@@ -274,9 +274,24 @@ interface LoadingCinemaProps {
   onComplete?: () => void
   revealing?: boolean
   assembling?: boolean
+  onLoadDefault?: () => void
+  onStartEmpty?: () => void
+  onChooseSources?: () => void
+  startupMode?: 'default' | 'empty' | 'custom'
+  startupActionPending?: boolean
 }
 
-export function LoadingCinema({ steps, onComplete, revealing = false, assembling = false }: LoadingCinemaProps) {
+export function LoadingCinema({
+  steps,
+  onComplete,
+  revealing = false,
+  assembling = false,
+  onLoadDefault,
+  onStartEmpty,
+  onChooseSources,
+  startupMode = 'default',
+  startupActionPending = false
+}: LoadingCinemaProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [visibleStepNames, setVisibleStepNames] = useState<string[]>([])
 
@@ -312,6 +327,32 @@ export function LoadingCinema({ steps, onComplete, revealing = false, assembling
           <span className="lc-title-seeker">Seeker</span>
         </div>
         <div className="lc-subtitle">Live Parcel Assembly</div>
+        <div className="lc-controls">
+          <button
+            className={`lc-control-btn ${startupMode === 'default' ? 'active' : ''}`}
+            onClick={onLoadDefault}
+            disabled={startupActionPending}
+          >
+            Default Data
+          </button>
+          <button
+            className={`lc-control-btn ${startupMode === 'empty' ? 'active' : ''}`}
+            onClick={onStartEmpty}
+            disabled={startupActionPending}
+          >
+            No Data
+          </button>
+          <button
+            className={`lc-control-btn ${startupMode === 'custom' ? 'active' : ''}`}
+            onClick={onChooseSources}
+            disabled={startupActionPending}
+          >
+            Choose Sources
+          </button>
+        </div>
+        <div className="lc-control-copy">
+          Stop the startup sequence and open the tool immediately, or pick folders before loading records.
+        </div>
 
         {/* Dataset loading list */}
         <div className="lc-datasets">

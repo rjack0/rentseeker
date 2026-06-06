@@ -1,4 +1,5 @@
 import type { Geometry } from 'geojson'
+import type { SourceProvenance, SourceType } from './sourceRegistry'
 
 export type BucketKey =
   | 'overview'
@@ -57,6 +58,21 @@ export interface DatasetSummary {
   rows: number
   sourcePath: string
   importedAt: string
+}
+
+export interface SourceRegistryEntry {
+  datasetId: string
+  datasetName: string
+  sourceType: SourceType
+  sourcePath?: string
+  color: string
+  byteSize: number
+  rowCount: number
+  refreshState: 'pending' | 'loading' | 'ready' | 'error'
+  rawKey?: string
+  normalizedKey?: string
+  confidence?: number
+  provenance?: SourceProvenance
 }
 
 export interface PhoenixRunSummary {
@@ -533,6 +549,28 @@ export interface ViewAnalysisResponse {
   analysis: ViewAnalysis | null
 }
 
+export interface ParcelAnalysisBundleRequest {
+  parcelId: string
+  lat: number
+  lng: number
+  lotSqft?: number
+  date: string
+  stories: number
+  geometry?: Geometry | null
+  parcel?: ParcelRecord | null
+}
+
+export interface ParcelAnalysisBundleResponse {
+  parcelId: string
+  geometryHash: string
+  terrain: TerrainMetricsResponse
+  sun: SunAnalysisResponse
+  view: ViewAnalysisResponse
+  buildRuns: BuildRunOutput[]
+  terrainProduct?: unknown | null
+  provenance?: ParcelDossierProvenance | null
+}
+
 /* ---------- Build Simulator types ---------- */
 
 export interface BuildTemplate {
@@ -548,6 +586,7 @@ export interface BuildRunInput {
   parcelId: string
   templateId: string
   stories: number
+  parcelGeometry?: Geometry | null
   /** Zoning constraints */
   frontSetbackFt?: number
   sideSetbackFt?: number
@@ -560,6 +599,7 @@ export interface BuildRunOutput {
   runId: string
   parcelId: string
   templateId: string
+  stories: number
   createdAt: string
   footprintSqft: number
   buildingHeightFt: number
@@ -694,12 +734,49 @@ export interface DataLoadStep {
   elapsedMs: number
   byteSize?: number
   errorMsg?: string
+  sourceType?: SourceType
+  rawKey?: string
+  normalizedKey?: string
+  confidence?: number
+  provenance?: SourceProvenance
 }
 
 export interface DataLoadProgress {
   steps: DataLoadStep[]
   totalRows: number
   overallPct: number
+}
+
+export interface ParcelFactProvenance {
+  factLabel: string
+  datasetId: string
+  datasetName: string
+  sourceType: SourceType
+  sourcePath?: string
+  sourceFields: string[]
+  rawKey: string
+  normalizedKey: string
+  matchKey: string
+  normalizations: string[]
+  confidence: 'High' | 'Medium-High' | 'Medium' | 'Low'
+  notes?: string
+}
+
+export interface ParcelDossierProvenance {
+  parcelId: string
+  owner?: ParcelFactProvenance | null
+  facts: Record<string, ParcelFactProvenance>
+}
+
+export interface ParcelFactSourceManifestEntry {
+  factLabel: string
+  aliases: string[]
+  datasetCandidates: string[]
+  sourceFields: string[]
+  normalizations: string[]
+  sourceType: SourceType
+  confidence: ParcelFactProvenance['confidence']
+  notes?: string
 }
 
 export interface ParcelPmtilesInfo {
@@ -736,6 +813,13 @@ export interface ParcelPmtilesStats {
   last: ParcelPmtilesTileStat[]
 }
 
+export interface ParcelSourceBlobStats {
+  available: boolean
+  blobs: number
+  totalBytes: number
+  latestAt: string | null
+}
+
 export type AnalyticsSortBy = 'parcel_count' | 'total_value' | 'total_acres' | 'total_sqft' | 'avg_value'
 
 export interface DistributionBin {
@@ -768,10 +852,11 @@ export interface DashboardApi {
   getTerrainMetrics: (parcelId: string, lat: number, lng: number, lotSqft?: number, geometry?: Geometry | null) => Promise<TerrainMetricsResponse>
   getTerrainProduct: (parcelId: string) => Promise<any | null>
   getSlopeAtPoint: (lat: number, lng: number) => Promise<{ slopeDeg: number; slopePct: number }>
-  getSunAnalysis: (parcelId: string, lat: number, lng: number, date: string) => Promise<SunAnalysisResponse>
-  getViewAnalysis: (parcelId: string, lat: number, lng: number, stories: number) => Promise<ViewAnalysisResponse>
+  getSunAnalysis: (parcelId: string, lat: number, lng: number, date: string, geometry?: Geometry | null) => Promise<SunAnalysisResponse>
+  getViewAnalysis: (parcelId: string, lat: number, lng: number, stories: number, geometry?: Geometry | null) => Promise<ViewAnalysisResponse>
   runBuildSimulation: (input: BuildRunInput, lat: number, lng: number, lotSqft?: number) => Promise<BuildRunOutput>
-  getBuildRunsForParcel: (parcelId: string) => Promise<BuildRunOutput[]>
+  getBuildRunsForParcel: (parcelId: string, geometryHash?: string) => Promise<BuildRunOutput[]>
+  getParcelAnalysisBundle: (request: ParcelAnalysisBundleRequest) => Promise<ParcelAnalysisBundleResponse>
   /* Phase 3: Owner Intelligence + Analytics */
   getOwnerByAin: (ain: string) => Promise<OwnerRecord | null>
   /** Ensure the SBF owner table is materialized and queryable (for fast per-parcel lookups). */
@@ -795,9 +880,12 @@ export interface DashboardApi {
   getParcelPmtilesStats: () => Promise<ParcelPmtilesStats>
   resetParcelPmtilesStats: () => Promise<void>
   getParcelPmtilesHttpBase: () => Promise<string | null>
+  getSourceBlobStats: () => Promise<ParcelSourceBlobStats>
   convertSbfXlsxToCsv: () => Promise<{ ok: boolean; outputs?: string[]; error?: string }>
   getDataLoadProgress: () => Promise<DataLoadProgress>
   onDataLoadProgress: (callback: (progress: DataLoadProgress) => void) => () => void
+  getParcelDossierProvenance: (parcel: ParcelRecord) => Promise<ParcelDossierProvenance>
+  getParcelFactSourceManifest: () => Promise<ParcelFactSourceManifestEntry[]>
   getPropstreamGridData: () => Promise<PropstreamGridPayload>
   syncPropstreamFolders: () => Promise<{ ok: boolean; folders: ImportedDataFolder[]; error?: string }>
   captureMainWindow: () => Promise<{ ok: boolean; path?: string; error?: string }>

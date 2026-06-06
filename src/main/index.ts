@@ -1,10 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import { existsSync, statSync } from 'fs'
-import { mkdir, readFile, readdir, writeFile } from 'fs/promises'
-import { basename, extname, join, resolve } from 'path'
+import { existsSync } from 'fs'
+import { readFile, writeFile } from 'fs/promises'
+import { join, resolve } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { createHash } from 'crypto'
 import http from 'http'
 
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
@@ -13,12 +12,11 @@ import type {
   BucketKey,
   IngestRequest,
   ParcelFilterQuery,
+  ParcelRecord,
   PhoenixRunRequest,
   QueryRequest,
   BuildRunInput,
-  AnalyticsSortBy,
-  DataLoadProgress,
-  PropstreamGridPayload
+  AnalyticsSortBy
 } from '@shared/types'
 
 import { DuckDBWorkspace } from './services/duckdbWorkspace'
@@ -34,7 +32,12 @@ import { OwnerService } from './services/ownerService'
 import { rentSeekerStore } from './services/rentSeekerStore'
 import { ParcelPmtilesService } from './services/parcelPmtilesService'
 import { propstreamService } from './services/propstreamService'
+import { geometryFingerprint } from '@shared/sourceRegistry'
 import type { TerrainMetricsResponse, SunAnalysisResponse, ViewAnalysisResponse } from '@shared/types'
+import { createDataRegistryService } from './services/dataRegistryService'
+import { getParcelAnalysisBundle } from './services/parcelAnalysisBundleService'
+import { getParcelDossierProvenance } from './services/parcelProvenanceService'
+import { getParcelFactSourceManifest } from './services/parcelProvenanceService'
 
 const rootPath = app.getAppPath()
 const workspace = new DuckDBWorkspace(rootPath)
@@ -48,86 +51,6 @@ const execFileAsync = promisify(execFile)
 let pmtilesHttpBase: string | null = null
 let pmtilesHttpServer: http.Server | null = null
 let mainWindowRef: BrowserWindow | null = null
-
-interface CustomDataFolderRecord {
-  folderPath: string
-  label: string
-  color: string
-  fileCount: number
-  byteSize: number
-  rowCount: number
-  importedAt: string
-  kind?: 'path' | 'propstream'
-}
-
-const DATA_FOLDER_STATE_FILE = () => resolve(app.getPath('userData'), 'data-folders.json')
-const SUPPORTED_IMPORT_EXTENSIONS = new Set(['.csv', '.tsv', '.json', '.xlsx', '.xls', '.geojson'])
-const CUSTOM_FOLDER_PALETTE = ['#00d4ff', '#abff02', '#ffde59', '#ff7a45', '#a78bfa', '#34d399', '#f472b6', '#94a3b8']
-
-function hashToPaletteColor(input: string): string {
-  const digest = createHash('sha1').update(input).digest()
-  const idx = digest[0] % CUSTOM_FOLDER_PALETTE.length
-  return CUSTOM_FOLDER_PALETTE[idx]
-}
-
-function labelFromFolderPath(folderPath: string): string {
-  const label = basename(folderPath).replace(/\.[^.]+$/, '').trim()
-  return label || 'Imported Data'
-}
-
-async function readCustomFolderRegistry(): Promise<CustomDataFolderRecord[]> {
-  try {
-    const raw = await readFile(DATA_FOLDER_STATE_FILE(), 'utf8')
-    const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed
-      .map((item) => ({
-        folderPath: String(item.folderPath ?? ''),
-        label: String(item.label ?? ''),
-        color: String(item.color ?? ''),
-        fileCount: Number(item.fileCount ?? 0) || 0,
-        byteSize: Number(item.byteSize ?? 0) || 0,
-      rowCount: Number(item.rowCount ?? 0) || 0,
-      importedAt: String(item.importedAt ?? new Date().toISOString()),
-      kind: (item.kind === 'propstream' ? 'propstream' : 'path') as 'path' | 'propstream'
-    }))
-      .filter((item) => item.folderPath)
-  } catch {
-    return []
-  }
-}
-
-async function writeCustomFolderRegistry(records: CustomDataFolderRecord[]): Promise<void> {
-  await mkdir(resolve(app.getPath('userData')), { recursive: true })
-  await writeFile(DATA_FOLDER_STATE_FILE(), JSON.stringify(records, null, 2), 'utf8')
-}
-
-async function collectImportableFiles(paths: string[]): Promise<Array<{ filePath: string; rootPath: string }>> {
-  const files = new Map<string, string>()
-  const queue = paths.map((path) => ({ path, rootPath: existsSync(path) && statSync(path).isDirectory() ? path : resolve(path, '..') }))
-  while (queue.length > 0) {
-    const current = queue.shift()!
-    if (!existsSync(current.path)) continue
-    const stat = statSync(current.path)
-    if (stat.isFile()) {
-      const ext = extname(current.path).toLowerCase()
-      if (SUPPORTED_IMPORT_EXTENSIONS.has(ext)) files.set(current.path, current.rootPath)
-      continue
-    }
-    if (!stat.isDirectory()) continue
-    const entries = await readdir(current.path, { withFileTypes: true })
-    for (const entry of entries) {
-      const child = resolve(current.path, entry.name)
-      if (entry.isDirectory()) {
-        queue.push({ path: child, rootPath: current.rootPath })
-      } else {
-        const ext = extname(entry.name).toLowerCase()
-        if (SUPPORTED_IMPORT_EXTENSIONS.has(ext)) files.set(child, current.rootPath)
-      }
-    }
-  }
-  return [...files.entries()].map(([filePath, rootPath]) => ({ filePath, rootPath }))
-}
 
 async function ensurePmtilesHttpServer(): Promise<string | null> {
   if (pmtilesHttpBase) return pmtilesHttpBase
@@ -194,200 +117,15 @@ const sbfConversionState: {
   startedAt: number
   lastError?: string
 } = { running: false, startedAt: 0 }
-
-const dataManifest = [
-  {
-    datasetName: 'LA County Assessor Parcels',
-    color: '#00d4ff',
-    path: '/Users/rjack/Desktop/almanac/Docs/RE Data/Parcel_Data_0 2.csv',
-    estimatedRows: 2400000
-  },
-  {
-    datasetName: 'Secured Basic File (SBF)',
-    color: '#e8c547',
-    path: '/Users/rjack/Desktop/almanac/Docs/RE Data/SBF Secured Basic File LA County Assessor Abstract/sbf_part1.csv',
-    estimatedRows: 880000
-  },
-  {
-    datasetName: 'Certificate of Occupancy',
-    color: '#ff6b35',
-    path: '/Users/rjack/Desktop/almanac/Docs/RE Data/Building_and_Safety_Certificate_of_Occupancy_20260404.csv',
-    estimatedRows: 150000
-  },
-  {
-    datasetName: 'Building Permits 2020+',
-    color: '#a78bfa',
-    path: '/Users/rjack/Desktop/almanac/Docs/RE Data/Building_and_Safety_-_Building_Permits_Issued_from_2020_to_Present_(N)_20260417.csv',
-    estimatedRows: 850000
-  },
-  {
-    datasetName: 'Electrical Permits 2020+',
-    color: '#34d399',
-    path: '/Users/rjack/Desktop/almanac/Docs/RE Data/Building_and_Safety_-_Electrical_Permits_Issued_from_2020_to_Present_(N)_20260417.csv',
-    estimatedRows: 650000
-  },
-  {
-    datasetName: 'Building Permits Submitted',
-    color: '#f472b6',
-    path: '/Users/rjack/Desktop/almanac/Docs/RE Data/Building_and_Safety_-_Building_Permits_Submitted_from_2020_to_Present_(N)_20260417.csv',
-    estimatedRows: 550000
-  },
-  {
-    datasetName: 'Inspections',
-    color: '#94a3b8',
-    path: '/Users/rjack/Desktop/almanac/Docs/RE Data/Building_and_Safety_Inspections_20260417.csv',
-    estimatedRows: 4000000
-  },
-  {
-    datasetName: 'Parcel Boundary Lines',
-    color: '#00ffc8',
-    path: '/Users/rjack/Desktop/almanac/Docs/RE Data/parcel_geojson/LACounty_Parcels.pmtiles',
-    estimatedRows: 2400000
-  }
-]
-
-async function getDataLoadProgress(): Promise<DataLoadProgress> {
-  const started = Date.now()
-  const customFolders = await readCustomFolderRegistry()
-  const manifestEntries = dataManifest.map((item) => {
-    let exists = existsSync(item.path)
-    let bytes = exists ? statSync(item.path).size : 0
-
-    // For SBF, treat it as present only when all 3 CSV parts exist.
-    if (item.datasetName.includes('(SBF)')) {
-      const dir = '/Users/rjack/Desktop/almanac/Docs/RE Data/SBF Secured Basic File LA County Assessor Abstract'
-      const parts = ['sbf_part1.csv', 'sbf_part2.csv', 'sbf_part3.csv'].map((name) => join(dir, name))
-      exists = parts.every((p) => existsSync(p))
-      bytes = exists ? parts.reduce((sum, p) => sum + statSync(p).size, 0) : 0
-    }
-
-    return {
-      sourcePath: item.path,
-      datasetId: item.datasetName.toLowerCase().replace(/[^a-z0-9]+/g, '_'),
-      step: {
-        datasetName: item.datasetName,
-        color: item.color,
-        status: sbfConversionState.running && item.datasetName.includes('(SBF)')
-          ? 'loading' as const
-          : (exists ? 'done' as const : 'error' as const),
-        rowCount: exists ? item.estimatedRows : 0,
-        elapsedMs: Date.now() - started,
-        byteSize: bytes,
-        errorMsg: exists ? undefined : (sbfConversionState.running && item.datasetName.includes('(SBF)') ? undefined : (sbfConversionState.lastError ?? 'File not found'))
-      }
-    }
-  })
-  const customEntries = customFolders.map((folder) => ({
-    sourcePath: folder.folderPath,
-    datasetId: `custom_folder_${createHash('sha1').update(folder.folderPath).digest('hex').slice(0, 10)}`,
-    step: {
-      datasetName: `Folder: ${folder.label || labelFromFolderPath(folder.folderPath)}`,
-      color: folder.color || hashToPaletteColor(folder.folderPath),
-      status: folder.folderPath.startsWith('propstream://') || existsSync(folder.folderPath)
-        ? 'done' as const
-        : 'error' as const,
-      rowCount: folder.rowCount,
-      elapsedMs: Date.now() - started,
-      byteSize: folder.folderPath.startsWith('propstream://') ? 0 : folder.byteSize,
-      errorMsg: folder.folderPath.startsWith('propstream://') || existsSync(folder.folderPath) ? undefined : 'Folder not found'
-    }
-  }))
-  const manifestSteps = [...manifestEntries, ...customEntries]
-  const steps = manifestSteps.map((entry) => entry.step)
-  await Promise.allSettled(manifestSteps.map((entry) => rentSeekerStore.recordSourceStep({
-    ...entry.step,
-    sourcePath: entry.sourcePath,
-    datasetId: entry.datasetId
-  })))
-  const done = steps.filter((step) => step.status === 'done').length
-  return {
-    steps,
-    totalRows: steps.reduce((sum, step) => sum + step.rowCount, 0),
-    overallPct: steps.length === 0 ? 0 : (done / steps.length) * 100
-  }
-}
-
-async function importDataPaths(paths: string[]): Promise<{ datasets: Awaited<ReturnType<typeof workspace.ingestFiles>>['datasets']; folders: CustomDataFolderRecord[]; skippedPaths: string[] }> {
-  await workspace.initialize()
-  const registry = await readCustomFolderRegistry()
-  const importableFiles = await collectImportableFiles(paths)
-  const skippedPaths = paths.filter((path) => !existsSync(path))
-  const ingestResponse = importableFiles.length > 0
-    ? await workspace.ingestFiles(importableFiles.map((entry) => entry.filePath))
-    : { datasets: [], summary: 'No importable rows found.' }
-
-  const now = new Date().toISOString()
-  const byFolder = new Map<string, { fileCount: number; byteSize: number; rowCount: number; label: string; color: string }>()
-  const rootByFile = new Map(importableFiles.map((entry) => [resolve(entry.filePath), resolve(entry.rootPath)] as const))
-  for (const entry of importableFiles) {
-    const parent = resolve(entry.rootPath)
-    const label = labelFromFolderPath(parent)
-    const color = hashToPaletteColor(parent)
-    const stat = existsSync(entry.filePath) ? statSync(entry.filePath) : null
-    const prev = byFolder.get(parent) ?? { fileCount: 0, byteSize: 0, rowCount: 0, label, color }
-    prev.fileCount += 1
-    prev.byteSize += stat?.size ?? 0
-    byFolder.set(parent, prev)
-  }
-
-  for (const dataset of ingestResponse.datasets) {
-    const source = resolve(dataset.sourcePath)
-    const parent = rootByFile.get(source) ?? resolve(source, '..')
-    const folderEntry = byFolder.get(parent)
-    if (folderEntry) folderEntry.rowCount += Number(dataset.rows ?? 0) || 0
-  }
-
-  const merged = [...registry]
-  for (const [folderPath, info] of byFolder.entries()) {
-    const existingIndex = merged.findIndex((item) => resolve(item.folderPath) === folderPath)
-    const next: CustomDataFolderRecord = {
-      folderPath,
-      label: info.label,
-      color: info.color,
-      fileCount: info.fileCount,
-      byteSize: info.byteSize,
-      rowCount: info.rowCount,
-      importedAt: now
-    }
-    if (existingIndex >= 0) merged[existingIndex] = next
-    else merged.push(next)
-  }
-  await writeCustomFolderRegistry(merged)
-
-  return { datasets: ingestResponse.datasets, folders: merged, skippedPaths }
-}
-
-async function syncPropstreamFolders(): Promise<{ payload: PropstreamGridPayload; folders: CustomDataFolderRecord[] }> {
-  const payload = await propstreamService.getGridData()
-  const registry = await readCustomFolderRegistry()
-  const now = new Date().toISOString()
-  const propFolders = await propstreamService.syncFolders()
-  const merged = [...registry.filter((item) => !item.folderPath.startsWith('propstream://'))]
-
-  for (const folder of propFolders) {
-    const next: CustomDataFolderRecord = {
-      folderPath: folder.folderPath,
-      label: folder.label,
-      color: folder.color,
-      fileCount: folder.fileCount,
-      byteSize: folder.byteSize,
-      rowCount: folder.rowCount,
-      importedAt: now,
-      kind: 'propstream'
-    }
-    const existingIndex = merged.findIndex((item) => item.folderPath === folder.folderPath)
-    if (existingIndex >= 0) merged[existingIndex] = next
-    else merged.push(next)
-  }
-
-  await writeCustomFolderRegistry(merged)
-  return { payload, folders: merged }
-}
+const dataRegistry = createDataRegistryService({
+  workspace,
+  rentSeekerStore,
+  propstreamService,
+  sbfConversionState
+})
 
 async function pushDataLoadProgressLive(mainWindow: BrowserWindow): Promise<void> {
-  // No fake sequencing. This is a file/manifest health snapshot.
-  // Runtime readiness is tracked separately by the renderer assembly gates.
-  const seed = await getDataLoadProgress()
+  const seed = await dataRegistry.getDataLoadProgress()
   mainWindow.webContents.send('dashboard:data-load-progress', seed)
 }
 
@@ -489,8 +227,8 @@ function registerIpc(): void {
 
   ipcMain.handle('dashboard:ingest-data-paths', async (_event, request: { paths: string[] }) => {
     try {
-      const result = await importDataPaths(Array.isArray(request?.paths) ? request.paths : [])
-      const snap = await getDataLoadProgress().catch(() => null)
+      const result = await dataRegistry.importDataPaths(Array.isArray(request?.paths) ? request.paths : [])
+      const snap = await dataRegistry.getDataLoadProgress().catch(() => null)
       if (snap) mainWindowRef?.webContents.send('dashboard:data-load-progress', snap)
       return {
         ok: true,
@@ -565,8 +303,9 @@ function registerIpc(): void {
   ipcMain.handle(
     'dashboard:get-terrain-metrics',
     async (_event, parcelId: string, lat: number, lng: number, lotSqft?: number, geometry?: any) => {
+      const geometryHash = geometryFingerprint(geometry ?? null)
       try {
-        const cached = await rentSeekerStore.getTerrainMetrics(parcelId)
+        const cached = await rentSeekerStore.getTerrainMetrics(parcelId, geometryHash)
         if (cached) {
           const resp: TerrainMetricsResponse = { computed: true, cached: true, metrics: cached }
           return resp
@@ -607,9 +346,10 @@ function registerIpc(): void {
   /* -------- Sun Simulator -------- */
   ipcMain.handle(
     'dashboard:get-sun-analysis',
-    async (_event, parcelId: string, lat: number, lng: number, date: string) => {
+    async (_event, parcelId: string, lat: number, lng: number, date: string, geometry?: any) => {
+      const geometryHash = geometryFingerprint(geometry ?? null)
       try {
-        const cached = await rentSeekerStore.getSunAnalysis(parcelId, date)
+        const cached = await rentSeekerStore.getSunAnalysis(parcelId, date, geometryHash)
         if (cached) {
           const resp: SunAnalysisResponse = { computed: true, cached: true, analysis: cached }
           return resp
@@ -618,7 +358,7 @@ function registerIpc(): void {
         // fall through
       }
       try {
-        const analysis = await computeSunAnalysis(parcelId, lat, lng, date)
+        const analysis = await computeSunAnalysis(parcelId, lat, lng, date, geometry ?? null)
         const resp: SunAnalysisResponse = { computed: true, cached: false, analysis }
         return resp
       } catch (err: any) {
@@ -636,9 +376,10 @@ function registerIpc(): void {
   /* -------- View Analysis -------- */
   ipcMain.handle(
     'dashboard:get-view-analysis',
-    async (_event, parcelId: string, lat: number, lng: number, stories: number) => {
+    async (_event, parcelId: string, lat: number, lng: number, stories: number, geometry?: any) => {
+      const geometryHash = geometryFingerprint(geometry ?? null)
       try {
-        const cached = await rentSeekerStore.getViewAnalysis(parcelId, stories)
+        const cached = await rentSeekerStore.getViewAnalysis(parcelId, stories, geometryHash)
         if (cached) {
           const resp: ViewAnalysisResponse = { computed: true, cached: true, analysis: cached }
           return resp
@@ -647,7 +388,7 @@ function registerIpc(): void {
         // fall through
       }
       try {
-        const analysis = await computeViewAnalysis(parcelId, lat, lng, stories)
+        const analysis = await computeViewAnalysis(parcelId, lat, lng, stories, geometry ?? null)
         const resp: ViewAnalysisResponse = { computed: true, cached: false, analysis }
         return resp
       } catch (err: any) {
@@ -666,15 +407,36 @@ function registerIpc(): void {
   ipcMain.handle(
     'dashboard:run-build-simulation',
     async (_event, input: BuildRunInput, lat: number, lng: number, lotSqft?: number) => {
-      const cachedTerrain = await rentSeekerStore.getTerrainMetrics(input.parcelId).catch(() => null)
+      const cachedTerrain = await rentSeekerStore.getTerrainMetrics(input.parcelId, geometryFingerprint(input.parcelGeometry ?? null)).catch(() => null)
       return runBuildSimulation(input, lat, lng, lotSqft, cachedTerrain ?? undefined)
     }
   )
 
   ipcMain.handle(
     'dashboard:get-build-runs-for-parcel',
-    async (_event, parcelId: string) => {
-      return rentSeekerStore.getBuildRunsForParcel(parcelId)
+    async (_event, parcelId: string, geometryHash?: string) => {
+      return rentSeekerStore.getBuildRunsForParcel(parcelId, geometryHash ?? '')
+    }
+  )
+
+  ipcMain.handle(
+    'dashboard:get-parcel-analysis-bundle',
+    async (_event, request) => {
+      return getParcelAnalysisBundle(request)
+    }
+  )
+
+  ipcMain.handle(
+    'dashboard:get-parcel-dossier-provenance',
+    async (_event, parcel: ParcelRecord) => {
+      return getParcelDossierProvenance(parcel, rentSeekerStore)
+    }
+  )
+
+  ipcMain.handle(
+    'dashboard:get-parcel-fact-source-manifest',
+    async () => {
+      return getParcelFactSourceManifest()
     }
   )
 
@@ -764,6 +526,10 @@ function registerIpc(): void {
     return ensurePmtilesHttpServer().catch(() => null)
   })
 
+  ipcMain.handle('dashboard:get-source-blob-stats', async () => {
+    return rentSeekerStore.getSourceBlobStats()
+  })
+
   /* -------- Owner Intelligence (SBF) -------- */
   ipcMain.handle(
     'dashboard:get-owner-by-ain',
@@ -817,7 +583,7 @@ function registerIpc(): void {
     }
   )
 
-  ipcMain.handle('dashboard:get-data-load-progress', async () => getDataLoadProgress())
+  ipcMain.handle('dashboard:get-data-load-progress', async () => dataRegistry.getDataLoadProgress())
 
   ipcMain.handle('dashboard:get-propstream-grid-data', async () => {
     return propstreamService.getGridData()
@@ -825,8 +591,8 @@ function registerIpc(): void {
 
   ipcMain.handle('dashboard:sync-propstream-folders', async () => {
     try {
-      const result = await syncPropstreamFolders()
-      const snap = await getDataLoadProgress().catch(() => null)
+      const result = await dataRegistry.syncPropstreamFolders()
+      const snap = await dataRegistry.getDataLoadProgress().catch(() => null)
       if (snap) mainWindowRef?.webContents.send('dashboard:data-load-progress', snap)
       return { ok: true, folders: result.folders, error: undefined }
     } catch (err: any) {
@@ -857,7 +623,7 @@ function registerIpc(): void {
     sbfConversionState.startedAt = Date.now()
     sbfConversionState.lastError = undefined
     try {
-      const snap = await getDataLoadProgress().catch(() => null)
+      const snap = await dataRegistry.getDataLoadProgress().catch(() => null)
       if (snap) event.sender.send('dashboard:data-load-progress', snap)
     } catch { /* ignore */ }
     try {
@@ -872,7 +638,7 @@ function registerIpc(): void {
         .map(line => line.split(':')[0])
       sbfConversionState.running = false
       try {
-        const snap = await getDataLoadProgress().catch(() => null)
+        const snap = await dataRegistry.getDataLoadProgress().catch(() => null)
         if (snap) event.sender.send('dashboard:data-load-progress', snap)
       } catch { /* ignore */ }
       return { ok: true, outputs }
@@ -880,7 +646,7 @@ function registerIpc(): void {
       sbfConversionState.running = false
       sbfConversionState.lastError = err?.message || String(err)
       try {
-        const snap = await getDataLoadProgress().catch(() => null)
+        const snap = await dataRegistry.getDataLoadProgress().catch(() => null)
         if (snap) event.sender.send('dashboard:data-load-progress', snap)
       } catch { /* ignore */ }
       return { ok: false, error: err?.message || String(err) }

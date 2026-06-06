@@ -11,7 +11,9 @@
  * Uses Google Elevation API for terrain sampling along sight lines.
  */
 
+import type { Geometry } from 'geojson'
 import type { ViewAnalysis, ViewRay, Landmark } from '@shared/types'
+import { geometryFingerprint } from '@shared/sourceRegistry'
 import { rentSeekerStore } from './rentSeekerStore'
 
 const GOOGLE_API_KEY = 'AIzaSyBLdVBeMnUEkSEO7fzA9tkr8h6MTEikDAE'
@@ -126,6 +128,24 @@ function destinationPoint(lat: number, lng: number, bearingDeg: number, distance
     lat: lat + (distanceMeters * Math.cos(bearingDeg * DEG_TO_RAD)) / METERS_PER_DEG_LAT,
     lng: lng + (distanceMeters * Math.sin(bearingDeg * DEG_TO_RAD)) / METERS_PER_DEG_LNG
   }
+}
+
+function geometryCenter(geometry: Geometry): { lat: number; lng: number } | null {
+  const coords: Array<[number, number]> = []
+  if (geometry.type === 'Polygon') {
+    coords.push(...((geometry.coordinates?.[0] ?? []) as Array<[number, number]>))
+  } else if (geometry.type === 'MultiPolygon') {
+    for (const poly of geometry.coordinates ?? []) {
+      coords.push(...((poly?.[0] ?? []) as Array<[number, number]>))
+    }
+  }
+  if (coords.length === 0) return null
+  const sum = coords.reduce((acc, [lng, lat]) => {
+    acc.lat += lat
+    acc.lng += lng
+    return acc
+  }, { lat: 0, lng: 0 })
+  return { lat: sum.lat / coords.length, lng: sum.lng / coords.length }
 }
 
 /**
@@ -255,13 +275,17 @@ export async function computeViewAnalysis(
   parcelId: string,
   lat: number,
   lng: number,
-  stories: number = 2
+  stories: number = 2,
+  parcelGeometry: Geometry | null = null
 ): Promise<ViewAnalysis> {
   const STORY_HEIGHT_FT = 11
   const viewerHeightFt = stories * STORY_HEIGHT_FT
+  const origin = parcelGeometry ? geometryCenter(parcelGeometry) ?? { lat, lng } : { lat, lng }
+  const originLat = origin.lat
+  const originLng = origin.lng
 
   // Get parcel ground elevation
-  const groundSamples = await queryElevations([{ lat, lng }])
+  const groundSamples = await queryElevations([{ lat: originLat, lng: originLng }])
   if (groundSamples.length === 0) {
     throw new Error('View analysis not computed (elevation unavailable)')
   }
@@ -272,7 +296,7 @@ export async function computeViewAnalysis(
   const blockedLandmarks: ViewAnalysis['blockedLandmarks'] = []
 
   for (const landmark of LA_LANDMARKS) {
-    const result = await checkLandmarkVisibility(lat, lng, groundElevFt, viewerHeightFt, landmark)
+    const result = await checkLandmarkVisibility(originLat, originLng, groundElevFt, viewerHeightFt, landmark)
     if (result.visible) {
       visibleLandmarks.push({
         landmark,
@@ -290,7 +314,7 @@ export async function computeViewAnalysis(
   // 2. Cast viewshed rays every 15° (24 rays for quick analysis)
   const viewshed: ViewRay[] = []
   for (let az = 0; az < 360; az += 15) {
-    const ray = await castViewRay(lat, lng, groundElevFt, viewerHeightFt, az, 25)
+    const ray = await castViewRay(originLat, originLng, groundElevFt, viewerHeightFt, az, 25)
     viewshed.push(ray)
   }
 
@@ -317,7 +341,7 @@ export async function computeViewAnalysis(
     viewScore: Math.min(100, viewScore),
     maxViewDistanceMi: maxDist
   }
-  await rentSeekerStore.recordViewAnalysis(analysis).catch((err) => {
+  await rentSeekerStore.recordViewAnalysis(analysis, geometryFingerprint(parcelGeometry)).catch((err) => {
     console.error('[ViewAnalysis] Failed to persist view analysis:', err)
   })
   return analysis

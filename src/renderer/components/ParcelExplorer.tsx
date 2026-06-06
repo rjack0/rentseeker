@@ -32,8 +32,14 @@ import type {
   BuildRunOutput,
   MapBounds,
   ParcelSelectionMode,
-  HeatMapCell
+  HeatMapCell,
+  ParcelDossierProvenance,
+  ParcelFactProvenance,
+  ParcelFactSourceManifestEntry,
+  ParcelSourceBlobStats,
+  ParcelAnalysisBundleResponse
 } from '@shared/types'
+import { geometryFingerprint, normalizeAin } from '@shared/sourceRegistry'
 import { useDeck3DOverlay, Toggle3DButton, ClayModeToggle, SlopeTooltip } from './Deck3DOverlay'
 import { SunOverlay, SunToggleButton } from './SunOverlay'
 import { ViewOverlay, ViewToggleButton } from './ViewOverlay'
@@ -271,7 +277,7 @@ function normalizeParcelDisplay(assessorId: string): string {
 }
 
 function formatMatchKey(parcel: ParcelRecord): string {
-  return parcel.ain || parcel.assessorId.replace(/[^0-9]/g, '')
+  return normalizeAin(parcel.ain || parcel.assessorId)
 }
 
 function parcelRecordKeys(parcel: ParcelRecord): string[] {
@@ -310,143 +316,6 @@ function parcelVisualSource(parcel: ParcelRecord): string {
   if (sources.has('building_permit_submitted')) return 'submitted'
   if (sources.has('inspection')) return 'inspection'
   return parcel.dataSource ?? 'parcel'
-}
-
-type FactProvenance = {
-  datasetName: string
-  sourceFields: string[]
-  matchKey: string
-  normalizations: string[]
-  confidence: 'High' | 'Medium-High' | 'Medium' | 'Low'
-  notes?: string
-}
-
-function sourceForFact(label: string, parcel: ParcelRecord): FactProvenance {
-  const matchKey = `AIN/APN ${formatMatchKey(parcel)}`
-  const lower = label.toLowerCase()
-
-  // Derived / computed metrics
-  if (lower.includes('geometric') || lower.includes('neighbor median') || lower.includes('sqft check')) {
-    return {
-      datasetName: 'Derived: Parcel polygon sqft check',
-      sourceFields: ['PMTiles parcels geometry (AIN)', 'Assessor Parcels: "Square Footage"'],
-      matchKey,
-      normalizations: ['AIN digits normalization', 'Polygon area computed in WebMercator; neighbors median from parcel polygons in expanded bounds'],
-      confidence: 'Medium-High',
-      notes: 'Computed and persisted in parcel_master: geometric_sqft, neighbor_median_sqft, sqft_check_status.'
-    }
-  }
-
-  if (lower.includes('slope') || lower.includes('relief') || lower.includes('aspect') || lower.includes('terrain')) {
-    return {
-      datasetName: 'Derived: Terrain engine',
-      sourceFields: ['Terrain samples (elevation grid) clipped to parcel polygon when available'],
-      matchKey,
-      normalizations: ['Parcel polygon used when available; otherwise centroid sampling'],
-      confidence: 'Medium',
-      notes: 'If elevation sampling fails, UI shows “not computed”.'
-    }
-  }
-
-  if (lower.includes('sun')) {
-    return {
-      datasetName: 'Derived: Sun simulator',
-      sourceFields: ['NOAA-style solar position math', 'Terrain elevation sampling for obstruction checks'],
-      matchKey,
-      normalizations: ['Date/season normalized to YYYY-MM-DD', 'Ray obstruction sampled at fixed distances'],
-      confidence: 'Medium',
-      notes: 'Persisted in parcel_sun_analysis; if elevation sampling fails, shows “not computed”.'
-    }
-  }
-
-  if (lower.includes('view')) {
-    return {
-      datasetName: 'Derived: View analysis',
-      sourceFields: ['Terrain elevation sampling', 'Landmark catalog'],
-      matchKey,
-      normalizations: ['Stories -> viewer height conversion', '360-degree ray sweep'],
-      confidence: 'Medium',
-      notes: 'Persisted in parcel_view_analysis; missing signals show “not computed”.'
-    }
-  }
-
-  // Certificate of Occupancy
-  if (lower.includes('cofo') || lower.includes('issue date') || lower.includes('permit type') || lower.includes('sub-type') || lower.includes('contractor') || lower.includes('stories') || lower.includes('zone') || lower.includes('work description') || lower.includes('valuation')) {
-    const fieldMap: Record<string, string> = {
-      'cofo number': 'cofo_number',
-      'issue date': 'issue_date',
-      'status': 'status',
-      'permit type': 'permit_type',
-      'sub-type': 'permit_sub_type',
-      'work description': 'work_description',
-      'valuation': 'valuation',
-      'zone': 'zone',
-      'stories': 'number_of_stories',
-      'contractor': 'contractor_name'
-    }
-    const key = lower
-    const sourceField = fieldMap[key] ?? label
-    return {
-      datasetName: 'Certificate of Occupancy',
-      sourceFields: [sourceField],
-      matchKey,
-      normalizations: ['Assessor book/page/parcel normalized', 'APN digits normalization'],
-      confidence: 'High'
-    }
-  }
-
-  // Permits / inspections
-  if (lower.includes('building permit') || lower.includes('electrical permit') || lower.includes('submitted') || lower.includes('inspection')) {
-    const src = lower.includes('electrical') ? 'Electrical Permits 2020+'
-      : lower.includes('submitted') ? 'Building Permits Submitted'
-      : lower.includes('inspection') ? 'Inspections'
-      : 'Building Permits 2020+'
-
-    const fields = lower.includes('count')
-      ? ['apn', 'permit_nbr', 'issue_date']
-      : lower.includes('status')
-        ? ['status_desc']
-        : lower.includes('work')
-          ? ['work_desc']
-          : lower.includes('valuation')
-            ? ['valuation']
-            : ['permit_nbr']
-
-    return {
-      datasetName: src,
-      sourceFields: fields,
-      matchKey,
-      normalizations: ['APN digits normalization (remove hyphens)', 'Permit numbers aggregated per APN; inspections joined by permit number'],
-      confidence: 'Medium-High'
-    }
-  }
-
-  // Assessor parcel file (base)
-  const assessorFieldMap: Record<string, string> = {
-    'total value': '"Total Value"',
-    'taxable value': '"Taxable Value"',
-    'land value': '"Land Value"',
-    'improvement value': '"Improvement Value"',
-    'sqft': '"Square Footage"',
-    'year built': '"Year Built"',
-    'bedrooms': '"Number of Bedrooms"',
-    'bathrooms': '"Number of Bathrooms"',
-    'units': '"Number of Units"',
-    'recording date': '"Recording Date"',
-    'property location': '"Property Location"',
-    'legal description': '"Parcel Legal Description"',
-    'classification': '"Classification"',
-    'region #': '"Region Number"',
-    'cluster code': '"Cluster Code"'
-  }
-  const srcField = assessorFieldMap[lower] ?? label
-  return {
-    datasetName: 'LA County Assessor Parcels',
-    sourceFields: [srcField],
-    matchKey,
-    normalizations: ['AIN/APN digits normalization', 'Latest roll year per Assessor ID'],
-    confidence: 'High'
-  }
 }
 
 function lineGeometryForPolygon(geometry: Geometry, streetClearEdges: boolean): Geometry {
@@ -682,6 +551,10 @@ interface DatasetLegendProps {
   manifestSteps: DataLoadStep[]
 }
 
+interface FactSourceManifestProps {
+  entries: ParcelFactSourceManifestEntry[]
+}
+
 function DatasetLegend({
   showCofO,
   onToggleCofO,
@@ -770,13 +643,62 @@ function DatasetLegend({
   )
 }
 
+function FactSourceManifestPanel({ entries }: FactSourceManifestProps) {
+  const grouped = useMemo(() => {
+    const buckets = new Map<string, ParcelFactSourceManifestEntry[]>()
+    for (const entry of entries) {
+      const key = entry.sourceType
+      const list = buckets.get(key) ?? []
+      list.push(entry)
+      buckets.set(key, list)
+    }
+    return [...buckets.entries()].map(([sourceType, items]) => ({
+      sourceType,
+      items: items.slice().sort((a, b) => a.factLabel.localeCompare(b.factLabel))
+    }))
+  }, [entries])
+
+  if (entries.length === 0) return null
+
+  return (
+    <div className="pe-manifest">
+      <div className="pe-manifest-title">FACT SOURCES</div>
+      <div className="pe-manifest-summary">
+        {entries.length.toLocaleString()} provenance rules · registry-backed
+      </div>
+      <div className="pe-manifest-groups">
+        {grouped.map(({ sourceType, items }) => (
+          <div key={sourceType} className="pe-manifest-group">
+            <div className="pe-manifest-group-title">{sourceType}</div>
+            {items.map((entry) => (
+              <div key={entry.factLabel} className="pe-manifest-row">
+                <div className="pe-manifest-row-head">
+                  <span className="pe-manifest-label">{entry.factLabel}</span>
+                  <span className="pe-manifest-confidence">{entry.confidence}</span>
+                </div>
+                <div className="pe-manifest-meta">
+                  <span>{entry.datasetCandidates.join(' · ')}</span>
+                  <span>{entry.sourceFields.join(' · ')}</span>
+                  <span>{entry.normalizations.join(' · ')}</span>
+                </div>
+                {entry.notes && <div className="pe-manifest-note">{entry.notes}</div>}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function VisualSettingsMenu({
   settings,
   onChange,
   onClose,
   pmtilesInfo,
   pmtilesSourceLayer,
-  pmtilesReady
+  pmtilesReady,
+  sourceBlobStats
 }: {
   settings: VisualSettings
   onChange: (settings: VisualSettings) => void
@@ -784,6 +706,7 @@ function VisualSettingsMenu({
   pmtilesInfo: ParcelPmtilesInfo | null
   pmtilesSourceLayer: string
   pmtilesReady: boolean
+  sourceBlobStats: ParcelSourceBlobStats | null
 }) {
   const patch = (next: Partial<VisualSettings>) => onChange({ ...settings, ...next })
   return (
@@ -842,6 +765,24 @@ function VisualSettingsMenu({
             <span className="k">Source-layer</span>
             <span className="v">{pmtilesSourceLayer || '—'}</span>
           </div>
+          <div className="pe-pmtiles-row">
+            <span className="k">Source blob cache</span>
+            <span className="v">
+              {sourceBlobStats?.blobs ? `${sourceBlobStats.blobs.toLocaleString()} blobs` : 'empty'}
+            </span>
+          </div>
+          {sourceBlobStats?.totalBytes != null && (
+            <div className="pe-pmtiles-row">
+              <span className="k">Blob bytes</span>
+              <span className="v">{formatCompact(sourceBlobStats.totalBytes)}</span>
+            </div>
+          )}
+          {sourceBlobStats?.latestAt && (
+            <div className="pe-pmtiles-row">
+              <span className="k">Blob updated</span>
+              <span className="v">{new Date(sourceBlobStats.latestAt).toLocaleTimeString()}</span>
+            </div>
+          )}
           {!pmtilesInfo && (
             <div className="pe-pmtiles-hint">PMTiles info not loaded.</div>
           )}
@@ -982,10 +923,12 @@ function ParcelCard({
 
 function DossierPanel({
   parcel,
-  onSelectOwner
+  onSelectOwner,
+  dossierProvenance
 }: {
   parcel: ParcelRecord | null
   onSelectOwner: (ownerName: string) => void
+  dossierProvenance: ParcelDossierProvenance | null
 }) {
   if (!parcel) {
     return (
@@ -1008,7 +951,7 @@ function DossierPanel({
       label={label}
       value={value}
       isCurrency={isCurrency}
-      provenance={sourceForFact(label, parcel)}
+      provenance={dossierProvenance?.facts?.[label] ?? null}
     />
   )
 
@@ -1025,7 +968,7 @@ function DossierPanel({
           </div>
         </div>
 
-        <OwnerPanel ain={parcel.ain || parcel.assessorId} onSelectOwner={onSelectOwner} />
+        <OwnerPanel ain={parcel.ain || parcel.assessorId} onSelectOwner={onSelectOwner} provenance={dossierProvenance?.owner ?? null} />
 
         {/* Summary */}
         <div className="pe-dossier-summary-grid">
@@ -1196,7 +1139,7 @@ function DossierFact({
   label: string
   value: string
   isCurrency?: boolean
-  provenance?: FactProvenance
+  provenance?: ParcelFactProvenance | null
 }) {
   const [open, setOpen] = useState(false)
   const displayValue = value === '0' || !value ? '—' : value
@@ -1288,6 +1231,7 @@ interface MapViewProps {
   onGroupSelect: (polygons: ParcelPolygon[], mode: ParcelSelectionMode) => void
   onViewportChange: (bounds: MapBounds) => void
   onBoundaryStats: (visibleCount: number, renderedCount: number, complete: boolean, suppressed: boolean) => void
+  onBoundaryRefreshStateChange?: (state: 'idle' | 'moving' | 'settling') => void
   onMapReady?: (map: maplibregl.Map) => void
   onBasemapReady?: () => void
   onBoundariesReady?: () => void
@@ -1310,6 +1254,7 @@ function MapView({
   onGroupSelect,
   onViewportChange,
   onBoundaryStats,
+  onBoundaryRefreshStateChange,
   onMapReady,
   onBasemapReady,
   onBoundariesReady
@@ -1373,15 +1318,6 @@ function MapView({
       })
 
       map.addSource('topo-source', {
-        type: 'geojson',
-        data: { type: 'FeatureCollection', features: [] }
-      })
-
-      // When parcel boundaries are suppressed (too dense / too zoomed-out), we still
-      // want "green street-like linework" as a smooth transition. We derive this
-      // from the same parcel vector tiles by extracting the longest edge per polygon
-      // (heuristic: likely street-facing) and rendering those edges as a separate layer.
-      map.addSource('street-edge-source', {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] }
       })
@@ -1655,18 +1591,6 @@ function MapView({
       } as any, 'parcels-glow')
 
       map.addLayer({
-        id: 'street-edge-layer',
-        type: 'line',
-        source: 'street-edge-source',
-        layout: { visibility: 'none' },
-        paint: {
-          'line-color': DATASET_COLORS.polygon,
-          'line-opacity': 0.65,
-          'line-width': 1.35
-        }
-      } as any, 'parcels-glow')
-
-      map.addLayer({
         id: 'topo-points-layer',
         type: 'circle',
         source: 'topo-source',
@@ -1792,7 +1716,7 @@ function MapView({
           const polygon = await window.rentSeeker.getParcelByPoint(e.lngLat.lng, e.lngLat.lat)
           if (polygon) onSelectParcelByKeyRef.current(polygon.ain || polygon.apn, polygon)
         } catch {
-          // Point lookup is a fallback; rendered feature clicks remain the primary path.
+          // Rendered feature clicks remain the primary path.
         }
       })
       // The PMTiles boundary layers are added asynchronously. Register interactions only after they're present.
@@ -1831,96 +1755,14 @@ function MapView({
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
-    let revealTimer: number | null = null
     let pollTimer: number | null = null
     let lastCountTs = 0
     let lastSeenSize = 0
-    let lastSuppressed = false
-    let consecutiveOver = 0
-    let consecutiveUnder = 0
-    let lastMoveStartAt = performance.now()
-
-    // Hysteresis to prevent flicker while tiles stream in.
-    const SUPPRESS_HIDE_THRESHOLD = Math.round(MAX_VISIBLE_PARCEL_BOUNDARIES * 1.12) // ~2800
-    const SUPPRESS_SHOW_THRESHOLD = Math.round(MAX_VISIBLE_PARCEL_BOUNDARIES * 0.88) // ~2200
 
     const applyVisibility = () => {
       const visibility = showPolygons ? 'visible' : 'none'
       if (map.getLayer(PMTILES_LINE_LAYER_ID)) map.setLayoutProperty(PMTILES_LINE_LAYER_ID, 'visibility', visibility)
       if (map.getLayer(PMTILES_FILL_LAYER_ID)) map.setLayoutProperty(PMTILES_FILL_LAYER_ID, 'visibility', visibility)
-    }
-
-    const setBoundaryOpacity = (opts: { line: number; fill: number }) => {
-      try {
-        if (map.getLayer(PMTILES_LINE_LAYER_ID)) map.setPaintProperty(PMTILES_LINE_LAYER_ID, 'line-opacity', opts.line)
-      } catch { /* ignore */ }
-      try {
-        if (map.getLayer(PMTILES_FILL_LAYER_ID)) map.setPaintProperty(PMTILES_FILL_LAYER_ID, 'fill-opacity', opts.fill)
-      } catch { /* ignore */ }
-    }
-
-    const setStreetEdgesVisible = (visible: boolean) => {
-      try {
-        if (map.getLayer('street-edge-layer')) {
-          map.setLayoutProperty('street-edge-layer', 'visibility', visible ? 'visible' : 'none')
-        }
-      } catch { /* ignore */ }
-    }
-
-    const setStreetEdgesData = (features: any[]) => {
-      try {
-        const src = map.getSource('street-edge-source') as maplibregl.GeoJSONSource | undefined
-        src?.setData({ type: 'FeatureCollection', features } as any)
-      } catch { /* ignore */ }
-    }
-
-    const extractStreetEdges = (): any[] => {
-      // Keep this cheap: use only a subset of currently-rendered fill features.
-      // We do not need exactness; we need a stable green "street-like" network.
-      if (!map.getLayer(PMTILES_FILL_LAYER_ID)) return []
-      const hits = map.queryRenderedFeatures(undefined, { layers: [PMTILES_FILL_LAYER_ID] } as any)
-      if (!hits || hits.length === 0) return []
-
-      const maxFeatures = 900
-      const step = Math.max(1, Math.floor(hits.length / maxFeatures))
-      const features: any[] = []
-
-      const segLen2 = (a: number[], b: number[]) => {
-        const dx = (b[0] - a[0]) * 92383
-        const dy = (b[1] - a[1]) * 111139
-        return dx * dx + dy * dy
-      }
-
-      for (let i = 0; i < hits.length; i += step) {
-        const g: any = (hits[i] as any).geometry
-        if (!g) continue
-        const addFromRing = (ring: number[][]) => {
-          if (!Array.isArray(ring) || ring.length < 3) return
-          let bestI = -1
-          let best = -Infinity
-          for (let j = 0; j < ring.length - 1; j++) {
-            const a = ring[j]; const b = ring[j + 1]
-            const l2 = segLen2(a, b)
-            if (l2 > best) { best = l2; bestI = j }
-          }
-          if (bestI < 0) return
-          const a = ring[bestI]; const b = ring[bestI + 1]
-          features.push({
-            type: 'Feature',
-            geometry: { type: 'LineString', coordinates: [a, b] },
-            properties: {}
-          })
-        }
-
-        if (g.type === 'Polygon') {
-          addFromRing(g.coordinates?.[0] ?? [])
-        } else if (g.type === 'MultiPolygon') {
-          const poly0 = g.coordinates?.[0]?.[0]
-          if (poly0) addFromRing(poly0)
-        }
-        if (features.length >= maxFeatures) break
-      }
-      return features
     }
 
     const updateCounts = () => {
@@ -1932,11 +1774,6 @@ function MapView({
         return
       }
       if (map.getZoom() < PARCEL_BOUNDARY_RENDER_MIN_ZOOM) {
-        // Too zoomed-out: suppress exact parcel outlines and show the green street-edge transition.
-        lastSuppressed = true
-        setBoundaryOpacity({ line: 0, fill: 0 })
-        setStreetEdgesVisible(true)
-        setStreetEdgesData(extractStreetEdges())
         onBoundaryStats(0, 0, true, true)
         return
       }
@@ -1958,122 +1795,48 @@ function MapView({
         seen.add(key)
       }
       lastSeenSize = seen.size
-      // Density suppression with hysteresis to prevent mid-stream flicker.
-      // We only flip suppression after several consecutive polls.
-      if (seen.size > SUPPRESS_HIDE_THRESHOLD) {
-        consecutiveOver += 1
-        consecutiveUnder = 0
-      } else if (seen.size < SUPPRESS_SHOW_THRESHOLD && seen.size > 0) {
-        consecutiveUnder += 1
-        consecutiveOver = 0
-      } else {
-        // In the deadband: do not change state.
-        consecutiveOver = 0
-        consecutiveUnder = 0
-      }
-
-      const stable = (performance.now() - lastMoveStartAt) > 450
-      const nextSuppressed = stable
-        ? (lastSuppressed ? (consecutiveUnder >= 3 ? false : lastSuppressed) : (consecutiveOver >= 3 ? true : lastSuppressed))
-        : lastSuppressed
-
-      if (nextSuppressed !== lastSuppressed) {
-        lastSuppressed = nextSuppressed
-        if (lastSuppressed) {
-          setBoundaryOpacity({ line: 0, fill: 0 })
-          setStreetEdgesVisible(true)
-          setStreetEdgesData(extractStreetEdges())
-        } else {
-          setStreetEdgesVisible(false)
-          setStreetEdgesData([])
-        }
-      } else if (lastSuppressed) {
-        // Refresh street edges lightly while suppressed so they match the current view.
-        if (stable) setStreetEdgesData(extractStreetEdges())
-      }
-
-      onBoundaryStats(seen.size, seen.size, true, lastSuppressed)
+      onBoundaryStats(seen.size, seen.size, true, false)
     }
 
     applyVisibility()
     updateCounts()
-    // Parcels: only reveal boundary layers after the user has stopped moving for a beat.
-    const hideBoundaries = () => {
+    const onMoveStart = () => {
       if (!showPolygons) return
-      lastMoveStartAt = performance.now()
-      if (revealTimer != null) {
-        window.clearTimeout(revealTimer)
-        revealTimer = null
-      }
+      onBoundaryRefreshStateChange?.('moving')
       if (pollTimer != null) {
         window.clearTimeout(pollTimer)
         pollTimer = null
       }
+      updateCounts()
     }
-    const revealBoundaries = () => {
+    const onMoveEnd = () => {
       if (!showPolygons) return
-      if (map.getZoom() < PARCEL_BOUNDARY_RENDER_MIN_ZOOM) return
-      if (revealTimer != null) window.clearTimeout(revealTimer)
-      revealTimer = window.setTimeout(() => {
-        // Reset hysteresis on new settle.
-        consecutiveOver = 0
-        consecutiveUnder = 0
-        // Ensure layers are visible, but start effectively hidden while we measure density.
-        try { if (map.getLayer(PMTILES_LINE_LAYER_ID)) map.setLayoutProperty(PMTILES_LINE_LAYER_ID, 'visibility', 'visible') } catch { /* ignore */ }
-        try { if (map.getLayer(PMTILES_FILL_LAYER_ID)) map.setLayoutProperty(PMTILES_FILL_LAYER_ID, 'visibility', 'visible') } catch { /* ignore */ }
-        // Use near-zero opacity so MapLibre still considers features rendered for queryRenderedFeatures.
-        setBoundaryOpacity({ line: 0.01, fill: 0.0 })
-        // Tiles may still be streaming. Poll briefly until something renders so the loader can advance.
-        let tries = 0
-        const poll = () => {
-          tries += 1
-          updateCounts()
-          if (!lastSuppressed && lastSeenSize > 0) {
-            try {
-              setBoundaryOpacity({ line: 0.86, fill: 0.0001 })
-              if (map.getLayer(PMTILES_FILL_LAYER_ID)) {
-                map.setPaintProperty(PMTILES_FILL_LAYER_ID, 'fill-opacity', [
-                  'case',
-                  ['boolean', ['feature-state', 'selected'], false], 0.18,
-                  ['boolean', ['feature-state', 'hover'], false], 0.14,
-                  ['boolean', ['feature-state', 'owner'], false], 0.1,
-                  visualSettings.showPolygonFill ? 0.04 : 0
-                ])
-              }
-            } catch {
-              // ignore
-            }
-            return
-          }
-          if (lastSuppressed && lastSeenSize > 0) {
-            // Suppressed due to density: show street edges transition.
-            setStreetEdgesVisible(true)
-            setStreetEdgesData(extractStreetEdges())
-            return
-          }
-          // Stop after ~10s; if boundaries still haven't rendered, keep stage visible but don't spin forever.
-          if (tries < 40) pollTimer = window.setTimeout(poll, 250)
-        }
-        poll()
-      }, 420)
+      onBoundaryRefreshStateChange?.('settling')
+      updateCounts()
+      if (pollTimer != null) window.clearTimeout(pollTimer)
+      pollTimer = window.setTimeout(() => {
+        updateCounts()
+        onBoundaryRefreshStateChange?.('idle')
+      }, 180)
     }
     const onSourceData = (e: any) => {
       if (!e?.sourceId || e.sourceId !== PMTILES_VECTOR_SOURCE_ID) return
       updateCounts()
     }
-    map.on('movestart', hideBoundaries)
-    map.on('moveend', revealBoundaries)
+    map.on('movestart', onMoveStart)
+    map.on('move', updateCounts)
+    map.on('moveend', onMoveEnd)
     map.on('sourcedata', onSourceData)
-    // Initial bring-up: trigger the same reveal debounce once so boundary tiles begin requesting.
-    revealBoundaries()
+    // Initial bring-up: trigger a real count pass so boundary tiles begin requesting.
+    updateCounts()
     return () => {
-      map.off('movestart', hideBoundaries)
-      map.off('moveend', revealBoundaries)
+      map.off('movestart', onMoveStart)
+      map.off('move', updateCounts)
+      map.off('moveend', onMoveEnd)
       map.off('sourcedata', onSourceData)
-      if (revealTimer != null) window.clearTimeout(revealTimer)
       if (pollTimer != null) window.clearTimeout(pollTimer)
     }
-  }, [showPolygons, visualSettings.showPolygonFill, onBoundaryStats])
+  }, [showPolygons, visualSettings.showPolygonFill, onBoundaryStats, onBoundaryRefreshStateChange])
 
   // Update topo overlay GeoJSON (terrain samples) + visibility.
   useEffect(() => {
@@ -2566,11 +2329,15 @@ export function ParcelExplorer() {
   const [sunAnalysisForShadow, setSunAnalysisForShadow] = useState<SunAnalysis | null>(null)
   const [topoOverlayData, setTopoOverlayData] = useState<any | null>(null)
   const [selectedParcelGeometry, setSelectedParcelGeometry] = useState<Geometry | null>(null)
+  const [analysisBundle, setAnalysisBundle] = useState<ParcelAnalysisBundleResponse | null>(null)
+  const [dossierProvenance, setDossierProvenance] = useState<ParcelDossierProvenance | null>(null)
   const [mapInstance, setMapInstance] = useState<maplibregl.Map | null>(null)
   const [loadProgress, setLoadProgress] = useState<DataLoadProgress | null>(null)
+  const [factSourceManifest, setFactSourceManifest] = useState<ParcelFactSourceManifestEntry[]>([])
   const [pmtilesInfo, setPmtilesInfo] = useState<ParcelPmtilesInfo | null>(null)
   const [pmtilesSourceLayer, setPmtilesSourceLayer] = useState<string>(PMTILES_VECTOR_LAYER_ID)
   const [pmtilesReady, setPmtilesReady] = useState(false)
+  const [sourceBlobStats, setSourceBlobStats] = useState<ParcelSourceBlobStats | null>(null)
   const [viewportRefreshCount, setViewportRefreshCount] = useState(0)
   const [polygonInteractionOk, setPolygonInteractionOk] = useState(false)
   const [buildRuns, setBuildRuns] = useState<BuildRunOutput[]>([])
@@ -2578,6 +2345,7 @@ export function ParcelExplorer() {
   const [renderedBoundaryCount, setRenderedBoundaryCount] = useState(0)
   const [boundaryComplete, setBoundaryComplete] = useState(true)
   const [boundariesSuppressedForDensity, setBoundariesSuppressedForDensity] = useState(false)
+  const [boundaryRefreshState, setBoundaryRefreshState] = useState<'idle' | 'moving' | 'settling'>('idle')
   const [selectedParcelIds, setSelectedParcelIds] = useState<Set<string>>(new Set())
   const [selectedGroupPolygons, setSelectedGroupPolygons] = useState<ParcelPolygon[]>([])
   const warmParcelPoolRef = useRef<Map<string, ParcelRecord>>(new Map())
@@ -2595,15 +2363,50 @@ export function ParcelExplorer() {
   ])
   const [assembling, setAssembling] = useState(true)
   const [runtimeGateStage, setRuntimeGateStage] = useState<'basemap' | 'boundaries' | 'records' | 'owner' | 'done'>('basemap')
+  const [startupMode, setStartupMode] = useState<'default' | 'empty' | 'custom'>('default')
+  const [startupActionPending, setStartupActionPending] = useState(false)
   const [pmtilesStats, setPmtilesStats] = useState<{ tiles: number; totalMs: number; lastMs: number } | null>(null)
   const [pmtilesStatsDetailed, setPmtilesStatsDetailed] = useState<any | null>(null)
   const captureOnceRef = useRef<{ boundaries?: boolean; records?: boolean }>({})
+  const startupModeRef = useRef<'default' | 'empty' | 'custom'>('default')
+  const startupEpochRef = useRef(0)
 
   const markAssembly = useCallback((name: string, patch: Partial<DataLoadStep>) => {
     const elapsedMs = Math.max(0, performance.now() - assemblyStartedAtRef.current)
     setAssemblySteps((current) => current.map((step) => (
       step.datasetName === name ? { ...step, ...patch, elapsedMs } : step
     )))
+  }, [])
+
+  const completeManualStartup = useCallback((mode: 'empty' | 'custom') => {
+    startupModeRef.current = mode
+    startupEpochRef.current += 1
+    setStartupMode(mode)
+    setLoading(false)
+    setRuntimeGateStage('done')
+    setAssemblySteps((current) => current.map((step) => ({
+      ...step,
+      status: step.datasetName === 'Basemap'
+        ? (step.status === 'done' ? 'done' : 'loading')
+        : 'done',
+      rowCount: step.datasetName === 'Basemap' ? step.rowCount : 0,
+      errorMsg: undefined
+    })))
+    setSelectedParcel(null)
+    setSelectedParcelIds(new Set())
+    setSelectedGroupPolygons([])
+    setResult(null)
+    setBuildRuns([])
+    setTerrainMetrics(null)
+    setTerrainStatus(null)
+    setSunAnalysisForShadow(null)
+    setTopoOverlayData(null)
+    setDossierProvenance(null)
+    setOwnerParcelAins(new Set())
+    setShowPolygons(false)
+    setVisibleBoundaryCount(0)
+    setRenderedBoundaryCount(0)
+    window.setTimeout(() => setAssembling(false), 120)
   }, [])
 
   // Keep elapsed time "live" for loading steps so the overlay reflects reality (no stale UI).
@@ -2779,6 +2582,31 @@ export function ParcelExplorer() {
     }
   }, [api])
 
+  const handleLoadDefaultStartup = useCallback(() => {
+    startupModeRef.current = 'default'
+    setStartupMode('default')
+  }, [])
+
+  const handleStartEmpty = useCallback(() => {
+    completeManualStartup('empty')
+  }, [completeManualStartup])
+
+  const handleChooseStartupSources = useCallback(async () => {
+    if (!api) return
+    setStartupActionPending(true)
+    startupModeRef.current = 'custom'
+    setStartupMode('custom')
+    try {
+      const folders = await api.pickImportFolder().catch(() => [])
+      if (folders.length > 0) {
+        await ingestPaths(folders)
+      }
+      completeManualStartup('custom')
+    } finally {
+      setStartupActionPending(false)
+    }
+  }, [api, completeManualStartup, ingestPaths])
+
   const pickImportFolder = useCallback(async () => {
     if (!api) return
     const folders = await api.pickImportFolder().catch(() => [])
@@ -2812,6 +2640,7 @@ export function ParcelExplorer() {
     if (!api) return
     // Strict sequencing: don't even start dataset manifest scans until the core runtime gates are done.
     if (runtimeGateStage !== 'done') return
+    if (startupModeRef.current !== 'default' && !importingData) return
     let alive = true
     api.getDataLoadProgress().then(progress => {
       if (alive) setLoadProgress(progress)
@@ -2821,12 +2650,13 @@ export function ParcelExplorer() {
       alive = false
       off()
     }
-  }, [api, runtimeGateStage])
+  }, [api, runtimeGateStage, importingData])
 
   // Mirror dataset-file readiness into the loader as real steps.
   useEffect(() => {
     if (!loadProgress) return
     if (runtimeGateStage !== 'done') return
+    if (startupModeRef.current !== 'default' && !importingData) return
     setAssemblySteps((current) => {
       const baseNames = new Set(current.map((s) => s.datasetName))
       const next = [...current]
@@ -2842,7 +2672,7 @@ export function ParcelExplorer() {
       }
       return next
     })
-  }, [loadProgress, runtimeGateStage])
+  }, [loadProgress, runtimeGateStage, importingData])
 
   // Inspect PMTiles layers/fields (drives the progress checklist + inspector UI).
   useEffect(() => {
@@ -2858,10 +2688,25 @@ export function ParcelExplorer() {
       .catch(() => undefined)
   }, [api])
 
+  useEffect(() => {
+    if (!api) return
+    api.getSourceBlobStats()
+      .then((stats) => setSourceBlobStats(stats))
+      .catch(() => setSourceBlobStats(null))
+  }, [api])
+
+  useEffect(() => {
+    if (!api) return
+    api.getParcelFactSourceManifest()
+      .then((entries) => setFactSourceManifest(Array.isArray(entries) ? entries : []))
+      .catch(() => setFactSourceManifest([]))
+  }, [api])
+
   // Prepare the SBF owner index only after records are loaded (sequential loader behavior).
   useEffect(() => {
     if (!api) return
     if (runtimeGateStage !== 'owner') return
+    if (startupModeRef.current !== 'default') return
     markAssembly('Owner Index (SBF)', { status: 'loading' })
     api.prepareOwnerIndex()
       .then((resp) => {
@@ -2908,17 +2753,11 @@ export function ParcelExplorer() {
     if (viewportReloadRef.current != null) window.clearTimeout(viewportReloadRef.current)
   }, [])
 
-  // Selected parcel lng/lat for 3D glow
-  const selectedLngLat: [number, number] | null = selectedParcel?.longitude && selectedParcel?.latitude
-    ? [selectedParcel.longitude, selectedParcel.latitude]
-    : null
-
   // 3D Photorealistic Tiles overlay with ALL 3DBuild.md features
   useDeck3DOverlay({
     map: mapInstance,
     enabled: is3D,
     clayMode,
-    selectedParcelLngLat: selectedLngLat,
     selectedParcelGeometry,
     buildRuns,
     sunAnalysis: sunAnalysisForShadow,
@@ -2966,20 +2805,20 @@ export function ParcelExplorer() {
     }
     const year = new Date().getFullYear()
     const date = `${year}-06-21`
-    api.getSunAnalysis(selectedParcel.assessorId, selectedParcel.latitude, selectedParcel.longitude, date)
+    api.getSunAnalysis(selectedParcel.assessorId, selectedParcel.latitude, selectedParcel.longitude, date, selectedParcelGeometry)
       .then((resp: SunAnalysisResponse) => {
         if (resp?.computed && resp.analysis) setSunAnalysisForShadow(resp.analysis)
         else setSunAnalysisForShadow(null)
       })
       .catch(() => setSunAnalysisForShadow(null))
-  }, [api, showSun, selectedParcel?.assessorId, selectedParcel?.latitude, selectedParcel?.longitude])
+  }, [api, showSun, selectedParcel?.assessorId, selectedParcel?.latitude, selectedParcel?.longitude, selectedParcelGeometry])
 
   useEffect(() => {
     if (!api || !selectedParcel) return
-    api.getBuildRunsForParcel(selectedParcel.assessorId)
+    api.getBuildRunsForParcel(selectedParcel.assessorId, geometryFingerprint(selectedParcelGeometry ?? null))
       .then(runs => setBuildRuns(runs.slice(0, 25)))
       .catch(() => setBuildRuns([]))
-  }, [api, selectedParcel?.assessorId])
+  }, [api, selectedParcel?.assessorId, selectedParcelGeometry])
 
   useEffect(() => {
     if (!api || !selectedParcel?.ain) {
@@ -2990,6 +2829,48 @@ export function ParcelExplorer() {
       .then((poly) => setSelectedParcelGeometry(poly?.geometry ?? null))
       .catch(() => setSelectedParcelGeometry(null))
   }, [api, selectedParcel?.ain])
+
+  useEffect(() => {
+    if (!api || !selectedParcel?.assessorId || !selectedParcel?.latitude || !selectedParcel?.longitude) {
+      setAnalysisBundle(null)
+      return
+    }
+    setDossierProvenance(null)
+    const request = {
+      parcelId: selectedParcel.assessorId,
+      lat: selectedParcel.latitude,
+      lng: selectedParcel.longitude,
+      lotSqft: selectedParcel.squareFootage || 5000,
+      date: `${new Date().getFullYear()}-06-21`,
+      stories: Math.max(1, Number(selectedParcel.numberOfStories ?? 2) || 2),
+      geometry: selectedParcelGeometry,
+      parcel: selectedParcel
+    }
+    api.getParcelAnalysisBundle(request)
+      .then((bundle) => {
+        setAnalysisBundle(bundle)
+        if (bundle.terrain?.metrics) {
+          setTerrainMetrics(bundle.terrain.metrics)
+          setTerrainStatus(bundle.terrain.computed ? { computed: true } : { computed: false, reason: bundle.terrain.reason })
+        }
+        if (bundle.sun?.analysis) {
+          setSunAnalysisForShadow(bundle.sun.analysis)
+        }
+        if (bundle.view?.analysis) {
+          // view analysis is surfaced in the right-side panel via the dedicated component
+        }
+        if (Array.isArray(bundle.buildRuns) && bundle.buildRuns.length > 0) {
+          setBuildRuns(bundle.buildRuns.slice(0, 25))
+        }
+        if (bundle.terrainProduct) {
+          setTopoOverlayData(bundle.terrainProduct)
+        }
+        if (bundle.provenance) {
+          setDossierProvenance(bundle.provenance)
+        }
+      })
+      .catch(() => setAnalysisBundle(null))
+  }, [api, selectedParcel?.assessorId, selectedParcel?.latitude, selectedParcel?.longitude, selectedParcel?.squareFootage, selectedParcel?.numberOfStories, selectedParcelGeometry])
 
   // Plan 02: geometric sqft + neighbor median sqft triple-check (parcel-polygon-aware, persisted).
   useEffect(() => {
@@ -3023,6 +2904,7 @@ export function ParcelExplorer() {
 
   // Load data
   const loadData = useCallback(async (filterQuery: ParcelFilterQuery, showAssembly = true) => {
+    if (startupModeRef.current !== 'default') return
     const signature = parcelLoadSignature(filterQuery)
     if (signature === activeLoadSignatureRef.current || signature === lastCompletedLoadSignatureRef.current) {
       return
@@ -3031,6 +2913,7 @@ export function ParcelExplorer() {
       queuedLoadRef.current = { filterQuery, showAssembly }
       return
     }
+    const loadEpoch = startupEpochRef.current
     loadInFlightRef.current = true
     activeLoadSignatureRef.current = signature
     if (showAssembly) setLoading(true)
@@ -3039,6 +2922,7 @@ export function ParcelExplorer() {
     try {
       if (!api) throw new Error('RentSeeker desktop API is unavailable. Open the Electron app window, not the raw Vite URL.')
       const data = await api.queryParcelFiltered(filterQuery)
+      if (startupEpochRef.current !== loadEpoch || startupModeRef.current !== 'default') return
       setResult(data)
       markAssembly('Parcel Records', { status: 'done', rowCount: Number(data?.returnedCount ?? data?.allParcels?.length ?? 0) || 0 })
       if (!captureOnceRef.current.records && api?.captureMainWindow) {
@@ -3054,20 +2938,22 @@ export function ParcelExplorer() {
         setSelectedParcelIds(new Set(parcelRecordKeys(first)))
       }
     } catch (err) {
+      if (startupEpochRef.current !== loadEpoch || startupModeRef.current !== 'default') return
       setError(err instanceof Error ? err.message : String(err))
       markAssembly('Parcel Records', { status: 'error', errorMsg: err instanceof Error ? err.message : String(err) })
       setRuntimeGateStage('owner')
     } finally {
+      const stale = startupEpochRef.current !== loadEpoch || startupModeRef.current !== 'default'
       if (showAssembly) setLoading(false)
       if (firstLoadRef.current) {
         firstLoadRef.current = false
       }
       loadInFlightRef.current = false
-      lastCompletedLoadSignatureRef.current = activeLoadSignatureRef.current
+      if (!stale) lastCompletedLoadSignatureRef.current = activeLoadSignatureRef.current
       activeLoadSignatureRef.current = null
       const queued = queuedLoadRef.current
       queuedLoadRef.current = null
-      if (queued) {
+      if (!stale && queued) {
         void loadData(queued.filterQuery, queued.showAssembly)
       }
     }
@@ -3151,6 +3037,7 @@ export function ParcelExplorer() {
   }, [filter, loadData, runtimeGateStage, showCofO, showBuildingPermits, showElectricalPermits, showSubmittedPermits, showInspections])
 
   const handleBoundaryStats = useCallback((visibleCount: number, renderedCount: number, complete: boolean, suppressed: boolean) => {
+    if (startupModeRef.current !== 'default') return
     setBoundariesSuppressedForDensity(suppressed)
     setVisibleBoundaryCount(suppressed ? 0 : visibleCount)
     setRenderedBoundaryCount(renderedCount)
@@ -3440,9 +3327,9 @@ export function ParcelExplorer() {
             <div className="pe-status-dot" />
             Visible parcel lines: {visibleBoundaryCount.toLocaleString()}
           </div>
-          {boundariesSuppressedForDensity && (
+          {boundaryRefreshState !== 'idle' && (
             <div className="pe-time-pill">
-              Parcel lines hidden (too many in view) · zoom in for exact boundaries
+              Parcel lines refreshing · {boundaryRefreshState}
             </div>
           )}
           {pmtilesStats && (
@@ -3506,11 +3393,12 @@ export function ParcelExplorer() {
         <VisualSettingsMenu
           settings={visualSettings}
           onChange={setVisualSettings}
-          onClose={() => setShowVisualSettings(false)}
-          pmtilesInfo={pmtilesInfo}
-          pmtilesSourceLayer={pmtilesSourceLayer}
-          pmtilesReady={pmtilesReady}
-        />
+        onClose={() => setShowVisualSettings(false)}
+        pmtilesInfo={pmtilesInfo}
+        pmtilesSourceLayer={pmtilesSourceLayer}
+        pmtilesReady={pmtilesReady}
+        sourceBlobStats={sourceBlobStats}
+      />
       )}
 
       {/* FILTER BAR (below header) */}
@@ -3549,6 +3437,8 @@ export function ParcelExplorer() {
         manifestSteps={loadProgress?.steps ?? []}
       />
 
+      <FactSourceManifestPanel entries={factSourceManifest} />
+
       {/* MAP (main area) */}
       <MapView
         parcels={displayedParcels}
@@ -3567,9 +3457,18 @@ export function ParcelExplorer() {
         onGroupSelect={handleGroupSelect}
         onViewportChange={refreshViewportRecords}
         onBoundaryStats={handleBoundaryStats}
+        onBoundaryRefreshStateChange={setBoundaryRefreshState}
         onMapReady={setMapInstance}
         onBasemapReady={() => {
           markAssembly('Basemap', { status: 'done' })
+          if (startupModeRef.current !== 'default') {
+            markAssembly('Parcel Boundary Lines', { status: 'done', rowCount: 0 })
+            markAssembly('Parcel Records', { status: 'done', rowCount: 0 })
+            markAssembly('Owner Index (SBF)', { status: 'done', rowCount: 0 })
+            markAssembly('Panels', { status: 'done', rowCount: 0 })
+            setRuntimeGateStage('done')
+            return
+          }
           markAssembly('Parcel Boundary Lines', { status: 'loading' })
           setPmtilesReady(false)
           setRuntimeGateStage('boundaries')
@@ -3616,12 +3515,17 @@ export function ParcelExplorer() {
       </div>
 
       {/* DOSSIER SIDEBAR */}
-      <DossierPanel parcel={selectedParcel} onSelectOwner={handleSelectOwner} />
+      <DossierPanel parcel={selectedParcel} onSelectOwner={handleSelectOwner} dossierProvenance={dossierProvenance} />
 
       {assembling && (
         <LoadingCinema
           steps={sequentializedSteps}
           assembling
+          onLoadDefault={handleLoadDefaultStartup}
+          onStartEmpty={handleStartEmpty}
+          onChooseSources={() => void handleChooseStartupSources()}
+          startupMode={startupMode}
+          startupActionPending={startupActionPending}
         />
       )}
 
@@ -3679,6 +3583,7 @@ export function ParcelExplorer() {
         parcelId={selectedParcel?.assessorId ?? null}
         lat={selectedParcel?.latitude ?? null}
         lng={selectedParcel?.longitude ?? null}
+        parcelGeometry={selectedParcelGeometry}
         visible={showSun}
         onClose={() => setShowSun(false)}
       />
@@ -3688,6 +3593,7 @@ export function ParcelExplorer() {
         parcelId={selectedParcel?.assessorId ?? null}
         lat={selectedParcel?.latitude ?? null}
         lng={selectedParcel?.longitude ?? null}
+        parcelGeometry={selectedParcelGeometry}
         visible={showView}
         onClose={() => setShowView(false)}
       />
@@ -3700,6 +3606,7 @@ export function ParcelExplorer() {
         useCode={selectedParcel?.propertyUseCode ?? null}
         squareFootage={selectedParcel?.squareFootage ?? null}
         terrainMetrics={terrainMetrics}
+        parcelGeometry={selectedParcelGeometry}
         visible={showBuild}
         onClose={() => setShowBuild(false)}
         onRunComplete={handleBuildRunComplete}

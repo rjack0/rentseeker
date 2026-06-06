@@ -7,6 +7,7 @@
  */
 
 import { useState, useCallback, useEffect } from 'react'
+import type { Geometry } from 'geojson'
 import type { SunAnalysis, SunAnalysisResponse } from '@shared/types'
 
 const api = (window as any).rentSeeker
@@ -15,11 +16,12 @@ interface SunOverlayProps {
   parcelId: string | null
   lat: number | null
   lng: number | null
+  parcelGeometry?: Geometry | null
   visible: boolean
   onClose: () => void
 }
 
-export function SunOverlay({ parcelId, lat, lng, visible, onClose }: SunOverlayProps) {
+export function SunOverlay({ parcelId, lat, lng, parcelGeometry, visible, onClose }: SunOverlayProps) {
   const [analysis, setAnalysis] = useState<SunAnalysis | null>(null)
   const [loading, setLoading] = useState(false)
   const [notComputedReason, setNotComputedReason] = useState<string | null>(null)
@@ -39,7 +41,7 @@ export function SunOverlay({ parcelId, lat, lng, visible, onClose }: SunOverlayP
     if (!parcelId || !lat || !lng) return
     setLoading(true)
     try {
-      const resp = await api.getSunAnalysis(parcelId, lat, lng, dateForSeason()) as SunAnalysisResponse
+      const resp = await api.getSunAnalysis(parcelId, lat, lng, dateForSeason(), parcelGeometry ?? null) as SunAnalysisResponse
       if (resp?.computed && resp.analysis) {
         setAnalysis(resp.analysis)
         setNotComputedReason(null)
@@ -53,7 +55,7 @@ export function SunOverlay({ parcelId, lat, lng, visible, onClose }: SunOverlayP
       setNotComputedReason(err instanceof Error ? err.message : String(err))
     }
     setLoading(false)
-  }, [parcelId, lat, lng, dateForSeason])
+  }, [parcelId, lat, lng, parcelGeometry, dateForSeason])
 
   useEffect(() => {
     if (visible && parcelId) {

@@ -17,6 +17,7 @@
 
 import type { TerrainMetrics, ElevationSample, SlopeResult } from '@shared/types'
 import type { Geometry } from 'geojson'
+import { geometryFingerprint } from '@shared/sourceRegistry'
 import { rentSeekerStore } from './rentSeekerStore'
 
 const GOOGLE_API_KEY = 'AIzaSyBLdVBeMnUEkSEO7fzA9tkr8h6MTEikDAE'
@@ -316,7 +317,7 @@ export async function computeTerrainMetrics(
   lotSqft: number = 5000,
   parcelGeometry: Geometry | null = null
 ): Promise<TerrainMetrics> {
-  // Calculate sampling radius from lot area (approximate square lot). Used as fallback.
+  // Calculate a sampling radius from lot area when a parcel polygon is unavailable.
   const lotSideMeters = Math.sqrt(lotSqft * 0.0929) // sqft to sqm
   const radius = Math.max(25, lotSideMeters / 2)
 
@@ -436,7 +437,7 @@ export async function computeTerrainMetrics(
     rawSampleCount: rawSamples.length,
     groundSampleCount: samples.length,
     samples
-  }).catch((err) => {
+  }, geometryFingerprint(parcelGeometry)).catch((err) => {
     console.error('[TerrainEngine] Failed to persist terrain metrics:', err)
   })
 

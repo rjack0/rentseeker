@@ -8,7 +8,9 @@
  */
 
 import { useState, useCallback, useEffect, useMemo } from 'react'
+import type { Geometry } from 'geojson'
 import type { BuildRunOutput, TerrainMetrics } from '@shared/types'
+import { geometryFingerprint } from '@shared/sourceRegistry'
 
 const api = (window as any).rentSeeker
 
@@ -19,6 +21,7 @@ interface BuildPanelProps {
   useCode: string | null
   squareFootage: number | null
   terrainMetrics: TerrainMetrics | null
+  parcelGeometry?: Geometry | null
   visible: boolean
   onClose: () => void
   onRunComplete?: (run: BuildRunOutput) => void
@@ -46,7 +49,7 @@ function flagLabel(flag: string): string {
   return flag.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 }
 
-export function BuildPanel({ parcelId, lat, lng, useCode, squareFootage, terrainMetrics, visible, onClose, onRunComplete }: BuildPanelProps) {
+export function BuildPanel({ parcelId, lat, lng, useCode, squareFootage, terrainMetrics, parcelGeometry, visible, onClose, onRunComplete }: BuildPanelProps) {
   const [results, setResults] = useState<Map<string, BuildRunOutput>>(new Map())
   const [loading, setLoading] = useState<string | null>(null)
   const [selectedResult, setSelectedResult] = useState<string | null>(null)
@@ -67,7 +70,7 @@ export function BuildPanel({ parcelId, lat, lng, useCode, squareFootage, terrain
     setLoading(templateId)
     try {
       const result = await api.runBuildSimulation(
-        { parcelId, templateId, stories },
+        { parcelId, templateId, stories, parcelGeometry },
         lat, lng, squareFootage || 5000
       )
       setResults(prev => new Map(prev).set(templateId, result))
@@ -77,14 +80,14 @@ export function BuildPanel({ parcelId, lat, lng, useCode, squareFootage, terrain
       console.error('[BuildPanel] Simulation failed:', err)
     }
     setLoading(null)
-  }, [parcelId, lat, lng, stories, squareFootage, onRunComplete])
+  }, [parcelId, lat, lng, stories, squareFootage, parcelGeometry, onRunComplete])
 
   // Clear results when parcel changes
   useEffect(() => {
     setResults(new Map())
     setSelectedResult(null)
     if (!parcelId) return
-    api.getBuildRunsForParcel(parcelId)
+    api.getBuildRunsForParcel(parcelId, geometryFingerprint(parcelGeometry ?? null))
       .then((runs: BuildRunOutput[]) => {
         const next = new Map<string, BuildRunOutput>()
         for (const run of runs) next.set(run.templateId, run)
@@ -95,7 +98,7 @@ export function BuildPanel({ parcelId, lat, lng, useCode, squareFootage, terrain
         }
       })
       .catch(() => undefined)
-  }, [parcelId, onRunComplete])
+  }, [parcelId, parcelGeometry, onRunComplete])
 
   if (!visible) return null
 

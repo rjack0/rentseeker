@@ -8,11 +8,13 @@
 
 import { open, type FileHandle } from 'fs/promises'
 import { existsSync } from 'fs'
+import { createHash } from 'crypto'
 import { PMTiles, type Source, type RangeResponse, type Header } from 'pmtiles'
 import { gunzipSync } from 'zlib'
 import { performance } from 'perf_hooks'
 
 import type { ParcelPmtilesStats, ParcelPmtilesTileStat } from '@shared/types'
+import { rentSeekerStore } from './rentSeekerStore'
 
 export interface ParcelPmtilesInfo {
   ok: boolean
@@ -194,6 +196,22 @@ export class ParcelPmtilesService {
         this.statsSumGunzipMs += gunzipMs
         this.statsSumTotalMs += totalMs
         this.recordStat({ z, x, y, bytes: bytes.byteLength, cacheHit: false, ioMs, gunzipMs, totalMs, at: Date.now() })
+        void rentSeekerStore.recordSourceBlob({
+          sourceSystem: 'parcel_pmtiles',
+          sourceUrl: `pmtiles://${z}/${x}/${y}.pbf`,
+          objectKey: `${z}/${x}/${y}`,
+          contentHash: createHash('sha1').update(bytes).digest('hex'),
+          mimeType: 'application/x-protobuf',
+          byteSize: bytes.byteLength,
+          payloadBase64: Buffer.from(bytes).toString('base64'),
+          payloadMeta: {
+            z,
+            x,
+            y,
+            cacheHit: false,
+            compression: this.header?.tileCompression ?? null
+          }
+        }).catch(() => undefined)
         return bytes
       } catch {
         // If decompression fails, fall back to raw bytes.
@@ -207,6 +225,22 @@ export class ParcelPmtilesService {
         this.statsSumIoMs += ioMs
         this.statsSumTotalMs += totalMs
         this.recordStat({ z, x, y, bytes: raw.byteLength, cacheHit: false, ioMs, gunzipMs: 0, totalMs, at: Date.now() })
+        void rentSeekerStore.recordSourceBlob({
+          sourceSystem: 'parcel_pmtiles',
+          sourceUrl: `pmtiles://${z}/${x}/${y}.pbf`,
+          objectKey: `${z}/${x}/${y}`,
+          contentHash: createHash('sha1').update(raw).digest('hex'),
+          mimeType: 'application/x-protobuf',
+          byteSize: raw.byteLength,
+          payloadBase64: Buffer.from(raw).toString('base64'),
+          payloadMeta: {
+            z,
+            x,
+            y,
+            cacheHit: false,
+            compression: 'raw'
+          }
+        }).catch(() => undefined)
         return raw
       }
     }
@@ -220,6 +254,22 @@ export class ParcelPmtilesService {
     this.statsSumIoMs += ioMs
     this.statsSumTotalMs += totalMs
     this.recordStat({ z, x, y, bytes: raw.byteLength, cacheHit: false, ioMs, gunzipMs: 0, totalMs, at: Date.now() })
+    void rentSeekerStore.recordSourceBlob({
+      sourceSystem: 'parcel_pmtiles',
+      sourceUrl: `pmtiles://${z}/${x}/${y}.pbf`,
+      objectKey: `${z}/${x}/${y}`,
+      contentHash: createHash('sha1').update(raw).digest('hex'),
+      mimeType: 'application/x-protobuf',
+      byteSize: raw.byteLength,
+      payloadBase64: Buffer.from(raw).toString('base64'),
+      payloadMeta: {
+        z,
+        x,
+        y,
+        cacheHit: false,
+        compression: this.header?.tileCompression ?? null
+      }
+    }).catch(() => undefined)
     return raw
   }
 

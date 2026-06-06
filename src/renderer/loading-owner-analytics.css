@@ -82,6 +82,50 @@
 .lc-title-rent { color: rgba(255, 255, 255, 0.95); }
 .lc-title-seeker { color: var(--pe-accent, #abff02); }
 
+.lc-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 10px;
+  flex-wrap: wrap;
+}
+
+.lc-control-btn {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(10, 14, 18, 0.82);
+  color: rgba(255, 255, 255, 0.82);
+  font-family: var(--pe-font-mono, 'Space Mono', monospace);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: none;
+  transition: border-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+.lc-control-btn:hover,
+.lc-control-btn.active {
+  color: var(--pe-accent, #abff02);
+  border-color: rgba(171, 255, 2, 0.35);
+  background: rgba(171, 255, 2, 0.08);
+  box-shadow: 0 0 0 3px rgba(171, 255, 2, 0.08);
+}
+
+.lc-control-btn:disabled {
+  opacity: 0.5;
+}
+
+.lc-control-copy {
+  margin-bottom: 16px;
+  color: rgba(255, 255, 255, 0.48);
+  font-family: var(--pe-font-mono, 'Space Mono', monospace);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  line-height: 1.45;
+}
+
 .lc-subtitle {
   font-family: var(--pe-font-mono, monospace);
   font-size: 10px;

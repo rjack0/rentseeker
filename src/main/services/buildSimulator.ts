@@ -12,6 +12,7 @@
 
 import { randomUUID } from 'crypto'
 import type { BuildRunInput, BuildRunOutput, TerrainMetrics, BuildTemplate } from '@shared/types'
+import { geometryFingerprint } from '@shared/sourceRegistry'
 import { computeTerrainMetrics } from './terrainEngine'
 import { rentSeekerStore } from './rentSeekerStore'
 
@@ -283,13 +284,18 @@ export async function runBuildSimulation(
   lotSqft: number = 5000,
   existingTerrain?: TerrainMetrics
 ): Promise<BuildRunOutput> {
+  const geometryHash = geometryFingerprint(input.parcelGeometry ?? null)
+  const cached = await rentSeekerStore.getBuildRunsForParcel(input.parcelId, geometryHash).catch(() => [])
+  const matched = cached.find((run) => run.templateId === input.templateId && run.stories === input.stories)
+  if (matched) return matched
+
   // Find the template
   const template = DEFAULT_TEMPLATES.find(t => t.id === input.templateId)
     ?? DEFAULT_TEMPLATES[0]
 
   // Get or compute terrain metrics
   const terrain = existingTerrain
-    ?? await computeTerrainMetrics(input.parcelId, parcelLat, parcelLng, lotSqft)
+    ?? await computeTerrainMetrics(input.parcelId, parcelLat, parcelLng, lotSqft, input.parcelGeometry ?? null)
 
   // Compute earthwork
   const earthwork = estimateCutVolume(terrain, template.footprintSqft, input.stories)
@@ -309,6 +315,7 @@ export async function runBuildSimulation(
     runId: randomUUID(),
     parcelId: input.parcelId,
     templateId: template.id,
+    stories: input.stories,
     createdAt: new Date().toISOString(),
     footprintSqft: template.footprintSqft,
     buildingHeightFt: input.stories * 11,
@@ -330,7 +337,7 @@ export async function runBuildSimulation(
     foundationSkirt: generateFoundationSkirt(terrain, template.footprintSqft, parcelLng, parcelLat)
   }
 
-  await rentSeekerStore.recordBuildRun(input, output, terrain).catch((err) => {
+  await rentSeekerStore.recordBuildRun(input, output, terrain, geometryHash).catch((err) => {
     console.error('[BuildSimulator] Failed to persist build run:', err)
   })
 

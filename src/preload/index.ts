@@ -33,8 +33,14 @@ const api: DashboardApi = {
     ipcRenderer.invoke('dashboard:get-view-analysis', parcelId, lat, lng, stories),
   runBuildSimulation: (input, lat, lng, lotSqft) =>
     ipcRenderer.invoke('dashboard:run-build-simulation', input, lat, lng, lotSqft),
-  getBuildRunsForParcel: (parcelId) =>
-    ipcRenderer.invoke('dashboard:get-build-runs-for-parcel', parcelId),
+  getBuildRunsForParcel: (parcelId, geometryHash) =>
+    ipcRenderer.invoke('dashboard:get-build-runs-for-parcel', parcelId, geometryHash),
+  getParcelAnalysisBundle: (request) =>
+    ipcRenderer.invoke('dashboard:get-parcel-analysis-bundle', request),
+  getParcelDossierProvenance: (parcel) =>
+    ipcRenderer.invoke('dashboard:get-parcel-dossier-provenance', parcel),
+  getParcelFactSourceManifest: () =>
+    ipcRenderer.invoke('dashboard:get-parcel-fact-source-manifest'),
   getParcelPolygons: (north, south, east, west, limit) =>
     ipcRenderer.invoke('dashboard:get-parcel-polygons', north, south, east, west, limit),
   getParcelPolygonByAin: (ain) =>
@@ -55,6 +61,7 @@ const api: DashboardApi = {
   getParcelPmtilesStats: () => ipcRenderer.invoke('dashboard:get-parcel-pmtiles-stats'),
   resetParcelPmtilesStats: () => ipcRenderer.invoke('dashboard:reset-parcel-pmtiles-stats'),
   getParcelPmtilesHttpBase: () => ipcRenderer.invoke('dashboard:get-parcel-pmtiles-http-base'),
+  getSourceBlobStats: () => ipcRenderer.invoke('dashboard:get-source-blob-stats'),
   convertSbfXlsxToCsv: () => ipcRenderer.invoke('dashboard:convert-sbf-xlsx-to-csv'),
   getOwnerByAin: (ain) => ipcRenderer.invoke('dashboard:get-owner-by-ain', ain),
   prepareOwnerIndex: () => ipcRenderer.invoke('dashboard:prepare-owner-index'),

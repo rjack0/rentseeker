@@ -15,6 +15,7 @@ import type {
   OwnerRecord, OwnerPortfolio, TopOwnerEntry,
   HeatMapCell, AnalyticsSortBy, DistributionsResponse, DistributionBin
 } from '@shared/types'
+import { normalizeAin, normalizeOwnerName } from '@shared/sourceRegistry'
 
 /* ═══════════════ DATA PATHS ═══════════════ */
 
@@ -28,14 +29,9 @@ const SBF_PARTS = [
 const OWNER_DB_PATH = join('/Users/rjack/Desktop/almanac/RentSeeker', '.rentseeker', 'owner.duckdb')
 
 function ownerNameTokens(ownerName: string): string[] {
-  const expanded = ownerName
-    .replace(/,/g, ' ')
-    .replace(/[^a-zA-Z0-9\s]/g, ' ')
-    .toLowerCase()
-    .split(/\s+/)
-    .map(token => token.trim())
-    .filter(token => token.length > 1)
-  return [...new Set(expanded)].slice(0, 8)
+  const normalized = normalizeOwnerName(ownerName)
+  if (!normalized) return []
+  return [...new Set(normalized.split(/\s+/).filter(token => token.length > 1))].slice(0, 8)
 }
 
 /* ═══════════════ SERVICE ═══════════════ */
@@ -188,7 +184,7 @@ export class OwnerService {
    */
   async getOwnerByAin(ain: string): Promise<OwnerRecord | null> {
     await this.ensureSbfTable()
-    const cleanAin = ain.replace(/[^0-9]/g, '')
+    const cleanAin = normalizeAin(ain)
     if (this.ownerByAinCache.has(cleanAin)) {
       const cached = this.ownerByAinCache.get(cleanAin) ?? null
       // refresh LRU order
@@ -213,7 +209,7 @@ export class OwnerService {
    */
   async getOwnerPortfolio(ownerName: string, limit: number = 500): Promise<OwnerPortfolio> {
     await this.ensureSbfTable()
-    const escaped = ownerName.replace(/'/g, "''")
+    const escaped = normalizeOwnerName(ownerName).replace(/'/g, "''")
     const tokens = ownerNameTokens(ownerName)
     const tokenClause = tokens.length > 0
       ? ` OR (${tokens.map(token => `first_owner_name ILIKE '%${token.replace(/'/g, "''")}%'`).join(' AND ')})`
@@ -398,11 +394,19 @@ export class OwnerService {
    */
   async searchOwners(query: string, limit: number = 20): Promise<string[]> {
     await this.ensureSbfTable()
-    const escaped = query.replace(/'/g, "''")
+    const normalized = normalizeOwnerName(query)
+    const escaped = normalized.replace(/'/g, "''")
+    const tokens = ownerNameTokens(query)
+    const tokenClause = tokens.length > 0
+      ? ` OR (${tokens.map(token => `first_owner_name ILIKE '%${token.replace(/'/g, "''")}%'`).join(' AND ')})`
+      : ''
     const rows = await this.query(`
       SELECT DISTINCT first_owner_name AS name
       FROM sbf
-      WHERE first_owner_name ILIKE '%${escaped}%'
+      WHERE (
+        first_owner_name ILIKE '%${escaped}%'
+        ${tokenClause}
+      )
         AND first_owner_name IS NOT NULL
         AND TRIM(first_owner_name) != ''
       ORDER BY first_owner_name
