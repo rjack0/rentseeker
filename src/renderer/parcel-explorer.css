@@ -1793,6 +1793,91 @@
   cursor: none;
 }
 
+.pe-empty-state {
+  position: fixed;
+  inset: calc(var(--pe-header-h) + 84px) calc(var(--pe-sidebar-w) + 280px) calc(var(--pe-bottom-bar-h) + 36px) 48px;
+  z-index: calc(var(--z-header) + 2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.pe-empty-shell {
+  width: min(560px, 100%);
+  padding: 28px 30px;
+  border: 1px solid rgba(171, 255, 2, 0.18);
+  border-radius: 14px;
+  background: rgba(6, 8, 10, 0.86);
+  backdrop-filter: blur(20px) saturate(1.15);
+  -webkit-backdrop-filter: blur(20px) saturate(1.15);
+  box-shadow: var(--pe-shadow-panel);
+  pointer-events: auto;
+}
+
+.pe-empty-kicker {
+  color: var(--pe-accent);
+  font-family: var(--pe-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.pe-empty-shell h2 {
+  margin-top: 10px;
+  color: var(--pe-text-primary);
+  font-family: var(--pe-font-mono);
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.pe-empty-shell p,
+.pe-empty-note {
+  margin-top: 12px;
+  color: var(--pe-text-secondary);
+  font-family: var(--pe-font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.pe-empty-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+
+.pe-empty-primary,
+.pe-empty-secondary {
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: var(--pe-radius-sm);
+  font-family: var(--pe-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: none;
+  transition: border-color 0.18s ease, color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.pe-empty-primary {
+  border: 1px solid rgba(171, 255, 2, 0.32);
+  background: rgba(171, 255, 2, 0.1);
+  color: var(--pe-accent);
+}
+
+.pe-empty-secondary {
+  border: 1px solid var(--pe-void-border-hi);
+  background: var(--pe-void-surface);
+  color: var(--pe-text-secondary);
+}
+
+.pe-empty-primary:hover,
+.pe-empty-secondary:hover {
+  box-shadow: 0 0 0 3px rgba(171, 255, 2, 0.08);
+  border-color: rgba(171, 255, 2, 0.32);
+}
+
 .pe-feature-dock {
   position: fixed;
   left: 20px;

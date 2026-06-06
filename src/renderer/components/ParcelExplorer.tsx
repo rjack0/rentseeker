@@ -691,6 +691,39 @@ function FactSourceManifestPanel({ entries }: FactSourceManifestProps) {
   )
 }
 
+function EmptyWorkspacePanel({
+  importingData,
+  onChooseSources,
+  onLoadDefault
+}: {
+  importingData: boolean
+  onChooseSources: () => void
+  onLoadDefault: () => void
+}) {
+  return (
+    <div className="pe-empty-state">
+      <div className="pe-empty-shell">
+        <div className="pe-empty-kicker">Workspace Empty</div>
+        <h2>Load your own data before parcel assembly starts.</h2>
+        <p>
+          Start with no records, import selected folders, then run the map and dossier flow against only those sources.
+        </p>
+        <div className="pe-empty-actions">
+          <button className="pe-empty-primary" onClick={onChooseSources} disabled={importingData}>
+            {importingData ? 'Importing…' : 'Load Your Data'}
+          </button>
+          <button className="pe-empty-secondary" onClick={onLoadDefault} disabled={importingData}>
+            Load Default Stack
+          </button>
+        </div>
+        <div className="pe-empty-note">
+          Drag folders into the window or use the `FOLDER` control in the header after startup.
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function VisualSettingsMenu({
   settings,
   onChange,
@@ -2406,6 +2439,13 @@ export function ParcelExplorer() {
     setShowPolygons(false)
     setVisibleBoundaryCount(0)
     setRenderedBoundaryCount(0)
+    setFilter((current) => ({
+      ...current,
+      bounds: undefined,
+      targetParcels: undefined,
+      randomSample: false,
+      limit: 500
+    }))
     window.setTimeout(() => setAssembling(false), 120)
   }, [])
 
@@ -2583,8 +2623,31 @@ export function ParcelExplorer() {
   }, [api])
 
   const handleLoadDefaultStartup = useCallback(() => {
+    startupEpochRef.current += 1
     startupModeRef.current = 'default'
     setStartupMode('default')
+    setShowPolygons(true)
+    setAssembling(true)
+    assemblyStartedAtRef.current = performance.now()
+    setAssemblySteps([
+      { datasetName: 'Basemap', color: '#ffffff', status: 'loading', rowCount: 0, elapsedMs: 0 },
+      { datasetName: 'Parcel Boundary Lines', color: '#abff02', status: 'pending', rowCount: 0, elapsedMs: 0 },
+      { datasetName: 'Parcel Records', color: '#00d4ff', status: 'pending', rowCount: 0, elapsedMs: 0 },
+      { datasetName: 'Owner Index (SBF)', color: '#ffde59', status: 'pending', rowCount: 0, elapsedMs: 0 },
+      { datasetName: 'Panels', color: '#ffffff', status: 'pending', rowCount: 0, elapsedMs: 0 }
+    ])
+    setRuntimeGateStage('basemap')
+    setFilter((current) => ({
+      ...current,
+      bounds: getSavedMapState()?.bounds ?? {
+        north: SANTA_MONICA_MOUNTAINS_CENTER[1] + 0.06,
+        south: SANTA_MONICA_MOUNTAINS_CENTER[1] - 0.06,
+        east: SANTA_MONICA_MOUNTAINS_CENTER[0] + 0.08,
+        west: SANTA_MONICA_MOUNTAINS_CENTER[0] - 0.08
+      },
+      randomSample: true,
+      limit: 500
+    }))
   }, [])
 
   const handleStartEmpty = useCallback(() => {
@@ -3478,6 +3541,14 @@ export function ParcelExplorer() {
           setPmtilesReady(true)
         }}
       />
+
+      {startupMode !== 'default' && displayedParcels.length === 0 && !assembling && (
+        <EmptyWorkspacePanel
+          importingData={importingData}
+          onChooseSources={() => void handleChooseStartupSources()}
+          onLoadDefault={handleLoadDefaultStartup}
+        />
+      )}
 
       <SelectionGroupPanel
         polygons={selectedGroupPolygons}
