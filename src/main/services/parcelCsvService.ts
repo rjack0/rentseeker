@@ -725,6 +725,24 @@ export class ParcelCsvService {
     if (filter.useType) {
       conditions.push(`"Property Use Type" = '${filter.useType.replace(/'/g, "''")}'`)
     }
+    if (filter.propertyUseCode?.trim()) {
+      conditions.push(`LOWER(COALESCE("Property Use Code", '')) = LOWER('${filter.propertyUseCode.replace(/'/g, "''")}')`)
+    }
+    if (filter.useCode3?.trim()) {
+      conditions.push(`LOWER(COALESCE("Use Code 3rd Digit", '')) = LOWER('${filter.useCode3.replace(/'/g, "''")}')`)
+    }
+    if (filter.city?.trim()) {
+      conditions.push(`LOWER(COALESCE("City", '')) = LOWER('${filter.city.replace(/'/g, "''")}')`)
+    }
+    if (filter.zipCode?.trim()) {
+      conditions.push(`COALESCE("Zip Code", '') = '${filter.zipCode.replace(/'/g, "''")}'`)
+    }
+    if (filter.cityTaxRateArea?.trim()) {
+      conditions.push(`LOWER(COALESCE("City Tax Rate Area", '')) = LOWER('${filter.cityTaxRateArea.replace(/'/g, "''")}')`)
+    }
+    if (filter.taxRateAreaCode?.trim()) {
+      conditions.push(`LOWER(COALESCE("Tax Rate Area Code", '')) = LOWER('${filter.taxRateAreaCode.replace(/'/g, "''")}')`)
+    }
 
     // Year built range
     if (filter.yearBuiltMin != null && filter.yearBuiltMin > 0) {
@@ -922,6 +940,12 @@ export class ParcelCsvService {
       taxableValue: 'taxable_value',
       landValue: 'land_value',
       improvementValue: 'improvement_value',
+      propertyUseCode: 'property_use_code',
+      useCode3: 'use_code_3',
+      city: 'city',
+      zipCode: 'zip_code',
+      cityTaxRateArea: 'city_tax_rate_area',
+      taxRateAreaCode: 'tax_rate_area_code',
       homeOwnersExemption: 'home_owners_exemption',
       realEstateExemption: 'real_estate_exemption',
       fixtureValue: 'fixture_value',

@@ -416,6 +416,12 @@ export interface ParcelFilterQuery {
   builtState?: 'all' | 'built' | 'unbuilt'
   /** Property use type filter */
   useType?: string
+  propertyUseCode?: string
+  useCode3?: string
+  city?: string
+  zipCode?: string
+  cityTaxRateArea?: string
+  taxRateAreaCode?: string
   /** Year built range */
   yearBuiltMin?: number
   yearBuiltMax?: number

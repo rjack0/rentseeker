@@ -401,6 +401,12 @@ function filterModeActive(filter: ParcelFilterQuery): boolean {
     filter.hasCofO ||
     (filter.builtState && filter.builtState !== 'all') ||
     filter.useType ||
+    filter.propertyUseCode ||
+    filter.useCode3 ||
+    filter.city ||
+    filter.zipCode ||
+    filter.cityTaxRateArea ||
+    filter.taxRateAreaCode ||
     filter.yearBuiltMin != null ||
     filter.yearBuiltMax != null ||
     filter.effectiveYearMin != null ||
@@ -508,6 +514,12 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
   const [localRollYearMax, setLocalRollYearMax] = useState(filter.rollYearMax?.toString() ?? '')
   const [localSqftMin, setLocalSqftMin] = useState(filter.sqftMin?.toString() ?? '')
   const [localSqftMax, setLocalSqftMax] = useState(filter.sqftMax?.toString() ?? '')
+  const [localPropertyUseCode, setLocalPropertyUseCode] = useState(filter.propertyUseCode ?? '')
+  const [localUseCode3, setLocalUseCode3] = useState(filter.useCode3 ?? '')
+  const [localCity, setLocalCity] = useState(filter.city ?? '')
+  const [localZipCode, setLocalZipCode] = useState(filter.zipCode ?? '')
+  const [localCityTaxRateArea, setLocalCityTaxRateArea] = useState(filter.cityTaxRateArea ?? '')
+  const [localTaxRateAreaCode, setLocalTaxRateAreaCode] = useState(filter.taxRateAreaCode ?? '')
   const [localBedMin, setLocalBedMin] = useState(filter.bedMin?.toString() ?? '')
   const [localBathMin, setLocalBathMin] = useState(filter.bathMin?.toString() ?? '')
   const [localUnitMin, setLocalUnitMin] = useState(filter.unitMin?.toString() ?? '')
@@ -569,6 +581,12 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
     setLocalRollYearMax(filter.rollYearMax?.toString() ?? '')
     setLocalSqftMin(filter.sqftMin?.toString() ?? '')
     setLocalSqftMax(filter.sqftMax?.toString() ?? '')
+    setLocalPropertyUseCode(filter.propertyUseCode ?? '')
+    setLocalUseCode3(filter.useCode3 ?? '')
+    setLocalCity(filter.city ?? '')
+    setLocalZipCode(filter.zipCode ?? '')
+    setLocalCityTaxRateArea(filter.cityTaxRateArea ?? '')
+    setLocalTaxRateAreaCode(filter.taxRateAreaCode ?? '')
     setLocalBedMin(filter.bedMin?.toString() ?? '')
     setLocalBathMin(filter.bathMin?.toString() ?? '')
     setLocalUnitMin(filter.unitMin?.toString() ?? '')
@@ -623,6 +641,12 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
     filter.rollYearMax,
     filter.sqftMin,
     filter.sqftMax,
+    filter.propertyUseCode,
+    filter.useCode3,
+    filter.city,
+    filter.zipCode,
+    filter.cityTaxRateArea,
+    filter.taxRateAreaCode,
     filter.bedMin,
     filter.bathMin,
     filter.unitMin,
@@ -936,6 +960,12 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
             <option value="taxableValue">Taxable</option>
             <option value="landValue">Land Value</option>
             <option value="improvementValue">Improvement Value</option>
+            <option value="propertyUseCode">Use Code</option>
+            <option value="useCode3">Use Code 3rd</option>
+            <option value="city">City</option>
+            <option value="zipCode">ZIP</option>
+            <option value="cityTaxRateArea">City Tax Area</option>
+            <option value="taxRateAreaCode">Tax Area Code</option>
             <option value="landBaseYear">Land Base Year</option>
             <option value="improvementBaseYear">Improvement Base Year</option>
             <option value="homeOwnersExemption">Homeowner Exemption</option>
@@ -1044,6 +1074,24 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
         {filter.classification && (
           <span className="pe-pill">Class {filter.classification} <button onClick={() => { setLocalClassification(''); applyFilter({ classification: undefined }) }}>×</button></span>
         )}
+        {filter.propertyUseCode && (
+          <span className="pe-pill">Use {filter.propertyUseCode} <button onClick={() => { setLocalPropertyUseCode(''); applyFilter({ propertyUseCode: undefined }) }}>×</button></span>
+        )}
+        {filter.useCode3 && (
+          <span className="pe-pill">Use3 {filter.useCode3} <button onClick={() => { setLocalUseCode3(''); applyFilter({ useCode3: undefined }) }}>×</button></span>
+        )}
+        {filter.city && (
+          <span className="pe-pill">{filter.city} <button onClick={() => { setLocalCity(''); applyFilter({ city: undefined }) }}>×</button></span>
+        )}
+        {filter.zipCode && (
+          <span className="pe-pill">ZIP {filter.zipCode} <button onClick={() => { setLocalZipCode(''); applyFilter({ zipCode: undefined }) }}>×</button></span>
+        )}
+        {filter.cityTaxRateArea && (
+          <span className="pe-pill">Tax area {filter.cityTaxRateArea} <button onClick={() => { setLocalCityTaxRateArea(''); applyFilter({ cityTaxRateArea: undefined }) }}>×</button></span>
+        )}
+        {filter.taxRateAreaCode && (
+          <span className="pe-pill">TRA {filter.taxRateAreaCode} <button onClick={() => { setLocalTaxRateAreaCode(''); applyFilter({ taxRateAreaCode: undefined }) }}>×</button></span>
+        )}
         {filter.regionNumber && (
           <span className="pe-pill">Region {filter.regionNumber} <button onClick={() => { setLocalRegionNumber(''); applyFilter({ regionNumber: undefined }) }}>×</button></span>
         )}
@@ -1075,6 +1123,30 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
           <div className="pe-filter-group">
             <label className="pe-filter-label">STORIES MAX</label>
             <input className="pe-filter-input small" value={localStoriesMax} placeholder="4" onChange={e => setLocalStoriesMax(e.target.value.replace(/[^0-9.]/g, ''))} onBlur={() => applyFilter({ storiesMax: parseNumericInput(localStoriesMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">USE CODE</label>
+            <input className="pe-filter-input small" value={localPropertyUseCode} placeholder="0100" onChange={e => setLocalPropertyUseCode(e.target.value)} onBlur={() => applyFilter({ propertyUseCode: localPropertyUseCode || undefined })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">USE CODE 3RD</label>
+            <input className="pe-filter-input small" value={localUseCode3} placeholder="1" onChange={e => setLocalUseCode3(e.target.value)} onBlur={() => applyFilter({ useCode3: localUseCode3 || undefined })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">CITY</label>
+            <input className="pe-filter-input small" value={localCity} placeholder="Los Angeles" onChange={e => setLocalCity(e.target.value)} onBlur={() => applyFilter({ city: localCity || undefined })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">ZIP</label>
+            <input className="pe-filter-input small" value={localZipCode} placeholder="90210" onChange={e => setLocalZipCode(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ zipCode: localZipCode || undefined })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">CITY TAX AREA</label>
+            <input className="pe-filter-input small" value={localCityTaxRateArea} placeholder="Beverly Hills" onChange={e => setLocalCityTaxRateArea(e.target.value)} onBlur={() => applyFilter({ cityTaxRateArea: localCityTaxRateArea || undefined })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">TAX AREA CODE</label>
+            <input className="pe-filter-input small" value={localTaxRateAreaCode} placeholder="00001" onChange={e => setLocalTaxRateAreaCode(e.target.value)} onBlur={() => applyFilter({ taxRateAreaCode: localTaxRateAreaCode || undefined })} />
           </div>
           <div className="pe-filter-group">
             <label className="pe-filter-label">LAND BASE MIN</label>
@@ -3360,6 +3432,12 @@ export function ParcelExplorer() {
       targetParcels: filterQuery.targetParcels ?? '',
       builtState: filterQuery.builtState ?? 'all',
       useType: filterQuery.useType ?? '',
+      propertyUseCode: filterQuery.propertyUseCode ?? '',
+      useCode3: filterQuery.useCode3 ?? '',
+      city: filterQuery.city ?? '',
+      zipCode: filterQuery.zipCode ?? '',
+      cityTaxRateArea: filterQuery.cityTaxRateArea ?? '',
+      taxRateAreaCode: filterQuery.taxRateAreaCode ?? '',
       valueMin: filterQuery.valueMin ?? null,
       valueMax: filterQuery.valueMax ?? null,
       yearBuiltMin: filterQuery.yearBuiltMin ?? null,
