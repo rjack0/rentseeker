@@ -2057,6 +2057,43 @@
   cursor: none;
 }
 
+.pe-analysis-status-bar {
+  position: fixed;
+  left: 20px;
+  bottom: calc(var(--pe-bottom-bar-h) + 58px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: var(--z-header);
+}
+
+.pe-analysis-chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(6, 8, 10, 0.84);
+  color: rgba(255,255,255,0.68);
+  font-family: var(--pe-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  box-shadow: var(--pe-shadow-panel);
+}
+
+.pe-analysis-chip.ok {
+  color: var(--pe-accent);
+  border-color: rgba(171, 255, 2, 0.28);
+}
+
+.pe-analysis-chip.warn {
+  color: #ffb47a;
+  border-color: rgba(255, 145, 77, 0.25);
+}
+
+.pe-analysis-chip.dim {
+  color: rgba(255,255,255,0.45);
+}
+
 .pe-empty-state {
   position: fixed;
   inset: calc(var(--pe-header-h) + 84px) calc(var(--pe-sidebar-w) + 280px) calc(var(--pe-bottom-bar-h) + 36px) 48px;

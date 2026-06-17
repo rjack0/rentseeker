@@ -5,6 +5,19 @@ export interface ParcelAnalysisDb {
   query(sql: string): Promise<Record<string, unknown>[]>
 }
 
+export interface AnalysisPersistenceSnapshot {
+  terrainUpdatedAt: string | null
+  terrainGeometryMatched: boolean
+  hasTerrainProduct: boolean
+  sunUpdatedAt: string | null
+  sunGeometryMatched: boolean
+  viewUpdatedAt: string | null
+  viewGeometryMatched: boolean
+  buildUpdatedAt: string | null
+  buildRunCount: number
+  buildGeometryMatchedCount: number
+}
+
 function sqlString(value: unknown): string {
   if (value == null) return 'NULL'
   return `'${String(value).replace(/'/g, "''")}'`
@@ -371,4 +384,78 @@ export async function recordParcelTileIntersection(db: ParcelAnalysisDb, parcelI
     INSERT OR REPLACE INTO parcel_spatial_index (parcel_id, tile_id, intersection_confidence, updated_at)
     VALUES (${sqlString(parcelId)}, ${sqlString(tileId)}, ${sqlNumber(confidence)}, now())
   `)
+}
+
+export async function getAnalysisPersistenceSnapshot(
+  db: ParcelAnalysisDb,
+  parcelId: string,
+  date: string,
+  stories: number,
+  geometryHash = ''
+): Promise<AnalysisPersistenceSnapshot> {
+  const cleanParcel = parcelId.replace(/'/g, "''")
+  const cleanDate = date.replace(/'/g, "''")
+  const cleanHash = geometryHash.replace(/'/g, "''")
+  const rows = await db.query(`
+    WITH terrain AS (
+      SELECT
+        MAX(updated_at) AS updated_at,
+        MAX(CASE WHEN COALESCE(geometry_hash, '') = '${cleanHash}' THEN 1 ELSE 0 END) AS geometry_matched
+      FROM parcel_terrain_metrics
+      WHERE parcel_id = '${cleanParcel}'
+    ),
+    terrain_products AS (
+      SELECT
+        COUNT(*) AS cnt
+      FROM parcel_terrain_products
+      WHERE parcel_id = '${cleanParcel}'
+    ),
+    sun AS (
+      SELECT
+        MAX(updated_at) AS updated_at,
+        MAX(CASE WHEN COALESCE(geometry_hash, '') = '${cleanHash}' THEN 1 ELSE 0 END) AS geometry_matched
+      FROM parcel_sun_analysis
+      WHERE parcel_id = '${cleanParcel}' AND analysis_date = '${cleanDate}'
+    ),
+    viewa AS (
+      SELECT
+        MAX(updated_at) AS updated_at,
+        MAX(CASE WHEN COALESCE(geometry_hash, '') = '${cleanHash}' THEN 1 ELSE 0 END) AS geometry_matched
+      FROM parcel_view_analysis
+      WHERE parcel_id = '${cleanParcel}' AND stories = ${sqlNumber(stories)}
+    ),
+    builds AS (
+      SELECT
+        MAX(r.created_at) AS updated_at,
+        COUNT(*) AS cnt,
+        SUM(CASE WHEN COALESCE(o.geometry_hash, '') = '${cleanHash}' THEN 1 ELSE 0 END) AS geometry_cnt
+      FROM build_runs r
+      LEFT JOIN build_run_outputs o ON o.run_id = r.run_id
+      WHERE r.parcel_id = '${cleanParcel}'
+    )
+    SELECT
+      (SELECT updated_at FROM terrain) AS terrain_updated_at,
+      (SELECT geometry_matched FROM terrain) AS terrain_geometry_matched,
+      (SELECT cnt FROM terrain_products) AS terrain_product_count,
+      (SELECT updated_at FROM sun) AS sun_updated_at,
+      (SELECT geometry_matched FROM sun) AS sun_geometry_matched,
+      (SELECT updated_at FROM viewa) AS view_updated_at,
+      (SELECT geometry_matched FROM viewa) AS view_geometry_matched,
+      (SELECT updated_at FROM builds) AS build_updated_at,
+      (SELECT cnt FROM builds) AS build_run_count,
+      (SELECT geometry_cnt FROM builds) AS build_geometry_matched_count
+  `)
+  const row = rows[0] ?? {}
+  return {
+    terrainUpdatedAt: row.terrain_updated_at ? String(row.terrain_updated_at) : null,
+    terrainGeometryMatched: Number(row.terrain_geometry_matched ?? 0) > 0,
+    hasTerrainProduct: Number(row.terrain_product_count ?? 0) > 0,
+    sunUpdatedAt: row.sun_updated_at ? String(row.sun_updated_at) : null,
+    sunGeometryMatched: Number(row.sun_geometry_matched ?? 0) > 0,
+    viewUpdatedAt: row.view_updated_at ? String(row.view_updated_at) : null,
+    viewGeometryMatched: Number(row.view_geometry_matched ?? 0) > 0,
+    buildUpdatedAt: row.build_updated_at ? String(row.build_updated_at) : null,
+    buildRunCount: Number(row.build_run_count ?? 0) || 0,
+    buildGeometryMatchedCount: Number(row.build_geometry_matched_count ?? 0) || 0
+  }
 }

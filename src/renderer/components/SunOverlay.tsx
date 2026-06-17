@@ -17,14 +17,16 @@ interface SunOverlayProps {
   lat: number | null
   lng: number | null
   parcelGeometry?: Geometry | null
+  initialAnalysis?: SunAnalysis | null
+  initialReason?: string | null
   visible: boolean
   onClose: () => void
 }
 
-export function SunOverlay({ parcelId, lat, lng, parcelGeometry, visible, onClose }: SunOverlayProps) {
-  const [analysis, setAnalysis] = useState<SunAnalysis | null>(null)
+export function SunOverlay({ parcelId, lat, lng, parcelGeometry, initialAnalysis = null, initialReason = null, visible, onClose }: SunOverlayProps) {
+  const [analysis, setAnalysis] = useState<SunAnalysis | null>(initialAnalysis)
   const [loading, setLoading] = useState(false)
-  const [notComputedReason, setNotComputedReason] = useState<string | null>(null)
+  const [notComputedReason, setNotComputedReason] = useState<string | null>(initialReason)
   const [selectedHour, setSelectedHour] = useState(12)
   const [season, setSeason] = useState<'summer' | 'equinox' | 'winter'>('summer')
 
@@ -56,6 +58,11 @@ export function SunOverlay({ parcelId, lat, lng, parcelGeometry, visible, onClos
     }
     setLoading(false)
   }, [parcelId, lat, lng, parcelGeometry, dateForSeason])
+
+  useEffect(() => {
+    setAnalysis(initialAnalysis)
+    setNotComputedReason(initialReason)
+  }, [initialAnalysis, initialReason, parcelId])
 
   useEffect(() => {
     if (visible && parcelId) {

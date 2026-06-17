@@ -17,14 +17,16 @@ interface ViewOverlayProps {
   lat: number | null
   lng: number | null
   parcelGeometry?: Geometry | null
+  initialAnalysis?: ViewAnalysis | null
+  initialReason?: string | null
   visible: boolean
   onClose: () => void
 }
 
-export function ViewOverlay({ parcelId, lat, lng, parcelGeometry, visible, onClose }: ViewOverlayProps) {
-  const [analysis, setAnalysis] = useState<ViewAnalysis | null>(null)
+export function ViewOverlay({ parcelId, lat, lng, parcelGeometry, initialAnalysis = null, initialReason = null, visible, onClose }: ViewOverlayProps) {
+  const [analysis, setAnalysis] = useState<ViewAnalysis | null>(initialAnalysis)
   const [loading, setLoading] = useState(false)
-  const [notComputedReason, setNotComputedReason] = useState<string | null>(null)
+  const [notComputedReason, setNotComputedReason] = useState<string | null>(initialReason)
   const [stories, setStories] = useState(2)
 
   const runAnalysis = useCallback(async () => {
@@ -46,6 +48,11 @@ export function ViewOverlay({ parcelId, lat, lng, parcelGeometry, visible, onClo
     }
     setLoading(false)
   }, [parcelId, lat, lng, parcelGeometry, stories])
+
+  useEffect(() => {
+    setAnalysis(initialAnalysis)
+    setNotComputedReason(initialReason)
+  }, [initialAnalysis, initialReason, parcelId])
 
   useEffect(() => {
     if (visible && parcelId) {

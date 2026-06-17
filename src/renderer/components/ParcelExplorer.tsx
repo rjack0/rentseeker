@@ -4759,6 +4759,23 @@ export function ParcelExplorer() {
         </div>
       )}
 
+      {analysisBundle?.status && selectedParcel && (
+        <div className="pe-analysis-status-bar">
+          <span className={`pe-analysis-chip ${analysisBundle.status.terrain.computed ? 'ok' : 'warn'}`}>
+            terrain {analysisBundle.status.terrain.cached ? 'cached' : 'live'}
+          </span>
+          <span className={`pe-analysis-chip ${analysisBundle.status.sun.computed ? 'ok' : 'warn'}`}>
+            sun {analysisBundle.status.sun.cached ? 'cached' : 'live'}
+          </span>
+          <span className={`pe-analysis-chip ${analysisBundle.status.view.computed ? 'ok' : 'warn'}`}>
+            view {analysisBundle.status.view.cached ? 'cached' : 'live'}
+          </span>
+          <span className={`pe-analysis-chip ${analysisBundle.status.build.runCount > 0 ? 'ok' : 'dim'}`}>
+            build {analysisBundle.status.build.runCount} runs
+          </span>
+        </div>
+      )}
+
       {selectedParcel && (
         <div className="pe-feature-dock">
           <button className={is3D ? 'active' : ''} onClick={() => setIs3D(current => !current)}>3D</button>
@@ -4780,6 +4797,8 @@ export function ParcelExplorer() {
         lat={selectedParcel?.latitude ?? null}
         lng={selectedParcel?.longitude ?? null}
         parcelGeometry={selectedParcelGeometry}
+        initialAnalysis={analysisBundle?.sun?.analysis ?? null}
+        initialReason={analysisBundle?.sun?.computed === false ? analysisBundle?.sun?.reason ?? 'Not computed' : null}
         visible={showSun}
         onClose={() => setShowSun(false)}
       />
@@ -4790,6 +4809,8 @@ export function ParcelExplorer() {
         lat={selectedParcel?.latitude ?? null}
         lng={selectedParcel?.longitude ?? null}
         parcelGeometry={selectedParcelGeometry}
+        initialAnalysis={analysisBundle?.view?.analysis ?? null}
+        initialReason={analysisBundle?.view?.computed === false ? analysisBundle?.view?.reason ?? 'Not computed' : null}
         visible={showView}
         onClose={() => setShowView(false)}
       />
@@ -4803,6 +4824,7 @@ export function ParcelExplorer() {
         squareFootage={selectedParcel?.squareFootage ?? null}
         terrainMetrics={terrainMetrics}
         parcelGeometry={selectedParcelGeometry}
+        initialRuns={analysisBundle?.buildRuns ?? []}
         visible={showBuild}
         onClose={() => setShowBuild(false)}
         onRunComplete={handleBuildRunComplete}

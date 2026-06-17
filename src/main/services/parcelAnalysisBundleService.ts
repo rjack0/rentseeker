@@ -77,6 +77,7 @@ export async function getParcelAnalysisBundle(request: ParcelAnalysisBundleReque
     buildRuns = await rentSeekerStore.getBuildRunsForParcel(request.parcelId).catch(() => [])
   }
   const terrainProduct = await rentSeekerStore.getLatestTerrainProduct(request.parcelId, 'surface_grid').catch(() => null)
+  const snapshot = await rentSeekerStore.getAnalysisPersistenceSnapshot(request.parcelId, request.date, request.stories, geometryHash).catch(() => null)
   const provenance = await getParcelDossierProvenance(request.parcel ?? {
     assessorId: request.parcelId,
     ain: request.parcelId.replace(/[^0-9]/g, ''),
@@ -141,6 +142,33 @@ export async function getParcelAnalysisBundle(request: ParcelAnalysisBundleReque
     view,
     buildRuns,
     terrainProduct,
-    provenance
+    provenance,
+    status: snapshot ? {
+      terrain: {
+        computed: terrain.computed,
+        cached: terrain.cached === true,
+        geometryMatched: snapshot.terrainGeometryMatched,
+        hasProduct: snapshot.hasTerrainProduct,
+        updatedAt: snapshot.terrainUpdatedAt
+      },
+      sun: {
+        computed: sun.computed,
+        cached: sun.cached === true,
+        geometryMatched: snapshot.sunGeometryMatched,
+        updatedAt: snapshot.sunUpdatedAt
+      },
+      view: {
+        computed: view.computed,
+        cached: view.cached === true,
+        geometryMatched: snapshot.viewGeometryMatched,
+        updatedAt: snapshot.viewUpdatedAt
+      },
+      build: {
+        runCount: snapshot.buildRunCount,
+        geometryMatchedCount: snapshot.buildGeometryMatchedCount,
+        cached: buildRuns.length > 0,
+        updatedAt: snapshot.buildUpdatedAt
+      }
+    } : undefined
   }
 }

@@ -8,6 +8,7 @@ import { getSourceBlobStats as loadSourceBlobStats, recordSourceBlob as recordSo
 import {
   PARCEL_ANALYSIS_SCHEMA_ALTER_SQL,
   PARCEL_ANALYSIS_SCHEMA_SQL,
+  getAnalysisPersistenceSnapshot as loadAnalysisPersistenceSnapshot,
   getBuildRunsForParcel as loadBuildRunsForParcel,
   getLatestTerrainProduct as loadLatestTerrainProduct,
   getSqftCheck as loadSqftCheck,
@@ -190,6 +191,10 @@ export class RentSeekerStore {
 
   async recordParcelTileIntersection(parcelId: string, tileId: string, confidence = 0.8): Promise<void> {
     return writeParcelTileIntersection(this, parcelId, tileId, confidence)
+  }
+
+  async getAnalysisPersistenceSnapshot(parcelId: string, date: string, stories: number, geometryHash = '') {
+    return loadAnalysisPersistenceSnapshot(this, parcelId, date, stories, geometryHash)
   }
 
   private async recordPermit(

@@ -631,6 +631,34 @@ export interface ParcelAnalysisBundleRequest {
   parcel?: ParcelRecord | null
 }
 
+export interface ParcelAnalysisStatus {
+  terrain: {
+    computed: boolean
+    cached: boolean
+    geometryMatched: boolean
+    hasProduct: boolean
+    updatedAt?: string | null
+  }
+  sun: {
+    computed: boolean
+    cached: boolean
+    geometryMatched: boolean
+    updatedAt?: string | null
+  }
+  view: {
+    computed: boolean
+    cached: boolean
+    geometryMatched: boolean
+    updatedAt?: string | null
+  }
+  build: {
+    runCount: number
+    geometryMatchedCount: number
+    cached: boolean
+    updatedAt?: string | null
+  }
+}
+
 export interface ParcelAnalysisBundleResponse {
   parcelId: string
   geometryHash: string
@@ -640,6 +668,7 @@ export interface ParcelAnalysisBundleResponse {
   buildRuns: BuildRunOutput[]
   terrainProduct?: unknown | null
   provenance?: ParcelDossierProvenance | null
+  status?: ParcelAnalysisStatus
 }
 
 /* ---------- Build Simulator types ---------- */

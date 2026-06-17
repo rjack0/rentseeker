@@ -22,6 +22,7 @@ interface BuildPanelProps {
   squareFootage: number | null
   terrainMetrics: TerrainMetrics | null
   parcelGeometry?: Geometry | null
+  initialRuns?: BuildRunOutput[]
   visible: boolean
   onClose: () => void
   onRunComplete?: (run: BuildRunOutput) => void
@@ -49,7 +50,7 @@ function flagLabel(flag: string): string {
   return flag.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 }
 
-export function BuildPanel({ parcelId, lat, lng, useCode, squareFootage, terrainMetrics, parcelGeometry, visible, onClose, onRunComplete }: BuildPanelProps) {
+export function BuildPanel({ parcelId, lat, lng, useCode, squareFootage, terrainMetrics, parcelGeometry, initialRuns = [], visible, onClose, onRunComplete }: BuildPanelProps) {
   const [results, setResults] = useState<Map<string, BuildRunOutput>>(new Map())
   const [loading, setLoading] = useState<string | null>(null)
   const [selectedResult, setSelectedResult] = useState<string | null>(null)
@@ -87,6 +88,15 @@ export function BuildPanel({ parcelId, lat, lng, useCode, squareFootage, terrain
     setResults(new Map())
     setSelectedResult(null)
     if (!parcelId) return
+    if (initialRuns.length > 0) {
+      const seeded = new Map<string, BuildRunOutput>()
+      for (const run of initialRuns) seeded.set(run.templateId, run)
+      setResults(seeded)
+      if (initialRuns[0]) {
+        setSelectedResult(initialRuns[0].templateId)
+        onRunComplete?.(initialRuns[0])
+      }
+    }
     api.getBuildRunsForParcel(parcelId, geometryFingerprint(parcelGeometry ?? null))
       .then((runs: BuildRunOutput[]) => {
         const next = new Map<string, BuildRunOutput>()
@@ -98,7 +108,7 @@ export function BuildPanel({ parcelId, lat, lng, useCode, squareFootage, terrain
         }
       })
       .catch(() => undefined)
-  }, [parcelId, parcelGeometry, onRunComplete])
+  }, [parcelId, parcelGeometry, initialRuns, onRunComplete])
 
   if (!visible) return null
 
