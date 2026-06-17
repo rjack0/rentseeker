@@ -137,6 +137,16 @@ const DEFAULT_VISUAL_SETTINGS: VisualSettings = {
 }
 
 const MAP_STATE_KEY = 'rentseeker.mapState'
+const SAVED_SELECTIONS_KEY = 'rentseeker.savedSelections'
+
+interface SavedSelectionSnapshot {
+  id: string
+  label: string
+  activeParcelKey: string | null
+  parcelKeys: string[]
+  polygons: Array<Pick<ParcelPolygon, 'ain' | 'apn' | 'address' | 'useCode' | 'useType' | 'centerLat' | 'centerLon'>>
+  savedAt: string
+}
 
 function getSavedMapState(): { center: [number, number]; zoom: number; bounds?: { north: number; south: number; east: number; west: number } } | null {
   if (typeof window === 'undefined') return null
@@ -167,6 +177,27 @@ function saveMapState(map: maplibregl.Map) {
         west: bounds.getWest()
       }
     }))
+  } catch {
+    // localStorage can be disabled in hardened contexts.
+  }
+}
+
+function getSavedSelections(): SavedSelectionSnapshot[] {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = window.localStorage.getItem(SAVED_SELECTIONS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function saveSavedSelections(selections: SavedSelectionSnapshot[]) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(SAVED_SELECTIONS_KEY, JSON.stringify(selections.slice(0, 12)))
   } catch {
     // localStorage can be disabled in hardened contexts.
   }
@@ -991,6 +1022,33 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
         )}
         {filter.buildingCountMin != null && (
           <span className="pe-pill">Buildings ≥ {filter.buildingCountMin} <button onClick={() => { setLocalBuildingMin(''); applyFilter({ buildingCountMin: undefined }) }}>×</button></span>
+        )}
+        {filter.storiesMin != null && (
+          <span className="pe-pill">Stories ≥ {filter.storiesMin} <button onClick={() => { setLocalStoriesMin(''); applyFilter({ storiesMin: undefined }) }}>×</button></span>
+        )}
+        {filter.storiesMax != null && (
+          <span className="pe-pill">Stories ≤ {filter.storiesMax} <button onClick={() => { setLocalStoriesMax(''); applyFilter({ storiesMax: undefined }) }}>×</button></span>
+        )}
+        {filter.buildingPermitCountMin != null && (
+          <span className="pe-pill">Bldg permits ≥ {filter.buildingPermitCountMin} <button onClick={() => { setLocalBuildingPermitCountMin(''); applyFilter({ buildingPermitCountMin: undefined }) }}>×</button></span>
+        )}
+        {filter.inspectionCountMin != null && (
+          <span className="pe-pill">Inspections ≥ {filter.inspectionCountMin} <button onClick={() => { setLocalInspectionCountMin(''); applyFilter({ inspectionCountMin: undefined }) }}>×</button></span>
+        )}
+        {filter.taxableValueMin != null && (
+          <span className="pe-pill">Taxable ≥ {formatCurrency(filter.taxableValueMin)} <button onClick={() => { setLocalTaxableValueMin(''); applyFilter({ taxableValueMin: undefined }) }}>×</button></span>
+        )}
+        {filter.taxableValueMax != null && (
+          <span className="pe-pill">Taxable ≤ {formatCurrency(filter.taxableValueMax)} <button onClick={() => { setLocalTaxableValueMax(''); applyFilter({ taxableValueMax: undefined }) }}>×</button></span>
+        )}
+        {filter.classification && (
+          <span className="pe-pill">Class {filter.classification} <button onClick={() => { setLocalClassification(''); applyFilter({ classification: undefined }) }}>×</button></span>
+        )}
+        {filter.regionNumber && (
+          <span className="pe-pill">Region {filter.regionNumber} <button onClick={() => { setLocalRegionNumber(''); applyFilter({ regionNumber: undefined }) }}>×</button></span>
+        )}
+        {filter.clusterCode && (
+          <span className="pe-pill">Cluster {filter.clusterCode} <button onClick={() => { setLocalClusterCode(''); applyFilter({ clusterCode: undefined }) }}>×</button></span>
         )}
         {filter.searchText && (
           <span className="pe-pill">"{filter.searchText}" <button onClick={() => { setLocalSearch(''); applyFilter({ searchText: undefined }) }}>×</button></span>
@@ -2120,6 +2178,7 @@ function MapView({
                   ['boolean', ['feature-state', 'owner'], false], DATASET_COLORS.sbf,
                   DATASET_COLORS.polygon
                 ],
+                'fill-opacity-transition': { duration: 180, delay: 0 },
                 'fill-opacity': [
                   'case',
                   ['boolean', ['feature-state', 'selected'], false], 0.18,
@@ -2145,6 +2204,8 @@ function MapView({
                   ['boolean', ['feature-state', 'owner'], false], DATASET_COLORS.sbf,
                   DATASET_COLORS.polygon
                 ],
+                'line-opacity-transition': { duration: 180, delay: 0 },
+                'line-width-transition': { duration: 180, delay: 0 },
                 'line-width': [
                   'case',
                   ['boolean', ['feature-state', 'selected'], false], visualSettings.lineStrength * 3,
@@ -3089,7 +3150,7 @@ export function ParcelExplorer() {
   const [dossierCollapsed, setDossierCollapsed] = useState(false)
   const [bottomBarCollapsed, setBottomBarCollapsed] = useState(false)
   const [selectionLocked, setSelectionLocked] = useState(false)
-  const [savedSelectionCount, setSavedSelectionCount] = useState<number | null>(null)
+  const [savedSelections, setSavedSelections] = useState<SavedSelectionSnapshot[]>(() => getSavedSelections())
   const [recordLimit, setRecordLimit] = useState(500)
   const [editingRecordLimit, setEditingRecordLimit] = useState(false)
   const [visualSettings, setVisualSettings] = useState<VisualSettings>(DEFAULT_VISUAL_SETTINGS)
@@ -3125,6 +3186,10 @@ export function ParcelExplorer() {
   const warmParcelPoolRef = useRef<Map<string, ParcelRecord>>(new Map())
   const [importingData, setImportingData] = useState(false)
   const [dropActive, setDropActive] = useState(false)
+
+  useEffect(() => {
+    saveSavedSelections(savedSelections)
+  }, [savedSelections])
 
   // Plan 03: real app-assembly loader tied to actual readiness gates.
   const assemblyStartedAtRef = useRef<number>(performance.now())
@@ -4033,6 +4098,49 @@ export function ParcelExplorer() {
     setSelectedGroupPolygons([])
   }, [])
 
+  const saveCurrentSelection = useCallback(() => {
+    const polygonSnapshots = selectedGroupPolygons.map((polygon) => ({
+      ain: polygon.ain,
+      apn: polygon.apn,
+      address: polygon.address,
+      useCode: polygon.useCode,
+      useType: polygon.useType,
+      centerLat: polygon.centerLat,
+      centerLon: polygon.centerLon
+    }))
+    const nextSnapshot: SavedSelectionSnapshot = {
+      id: `${Date.now()}`,
+      label: selectedParcel
+        ? `${normalizeParcelDisplay(selectedParcel.assessorId)}${selectedGroupPolygons.length > 1 ? ` +${selectedGroupPolygons.length - 1}` : ''}`
+        : `${selectedGroupPolygons.length.toLocaleString()} parcels`,
+      activeParcelKey,
+      parcelKeys: [...selectedParcelIds],
+      polygons: polygonSnapshots,
+      savedAt: new Date().toISOString()
+    }
+    setSavedSelections((current) => [nextSnapshot, ...current.filter((item) => item.id !== nextSnapshot.id)].slice(0, 12))
+  }, [activeParcelKey, selectedGroupPolygons, selectedParcel, selectedParcelIds])
+
+  const restoreSavedSelection = useCallback((snapshot: SavedSelectionSnapshot) => {
+    setBottomBarCollapsed(false)
+    setDossierCollapsed(false)
+    setSelectedParcelIds(new Set(snapshot.parcelKeys))
+    setSelectedGroupPolygons(snapshot.polygons.map((polygon) => ({
+      ...polygon,
+      geometry: { type: 'Polygon', coordinates: [] } as any
+    })))
+    if (snapshot.activeParcelKey) {
+      void handleSelectParcelByKey(snapshot.activeParcelKey, snapshot.polygons[0] ? ({
+        ...snapshot.polygons[0],
+        geometry: { type: 'Polygon', coordinates: [] } as any
+      } as ParcelPolygon) : null)
+    }
+  }, [handleSelectParcelByKey])
+
+  const clearSavedSelection = useCallback((id: string) => {
+    setSavedSelections((current) => current.filter((item) => item.id !== id))
+  }, [])
+
   useEffect(() => {
     if (!selectedParcel) {
       setActiveParcelKey(null)
@@ -4459,7 +4567,7 @@ export function ParcelExplorer() {
             <button className={`pe-bottom-bar-action ${selectionLocked ? 'active' : ''}`} onClick={() => setSelectionLocked(v => !v)}>
               {selectionLocked ? 'Unlock' : 'Lock'}
             </button>
-            <button className="pe-bottom-bar-action" onClick={() => setSavedSelectionCount(selectedParcelIds.size || selectedGroupPolygons.length)}>
+            <button className="pe-bottom-bar-action" onClick={saveCurrentSelection} disabled={selectedParcelIds.size === 0 && !selectedParcel}>
               Save
             </button>
             {editingRecordLimit ? (
@@ -4481,7 +4589,14 @@ export function ParcelExplorer() {
                 {loadedRecordCount.toLocaleString()} / {totalMatchingParcels.toLocaleString()}
               </button>
             )}
-            {savedSelectionCount != null && <span className="pe-bottom-bar-saved">saved {savedSelectionCount.toLocaleString()}</span>}
+            {savedSelections[0] && (
+              <div className="pe-bottom-bar-saved-group">
+                <button className="pe-bottom-bar-saved" onClick={() => restoreSavedSelection(savedSelections[0])}>
+                  restore {savedSelections[0].label}
+                </button>
+                <button className="pe-bottom-bar-saved-clear" onClick={() => clearSavedSelection(savedSelections[0].id)}>×</button>
+              </div>
+            )}
             <button className="pe-bottom-bar-collapse" onClick={() => setBottomBarCollapsed(v => !v)}>–</button>
           </div>
         </div>
