@@ -19,11 +19,12 @@ interface ViewOverlayProps {
   parcelGeometry?: Geometry | null
   initialAnalysis?: ViewAnalysis | null
   initialReason?: string | null
+  statusLabel?: string | null
   visible: boolean
   onClose: () => void
 }
 
-export function ViewOverlay({ parcelId, lat, lng, parcelGeometry, initialAnalysis = null, initialReason = null, visible, onClose }: ViewOverlayProps) {
+export function ViewOverlay({ parcelId, lat, lng, parcelGeometry, initialAnalysis = null, initialReason = null, statusLabel = null, visible, onClose }: ViewOverlayProps) {
   const [analysis, setAnalysis] = useState<ViewAnalysis | null>(initialAnalysis)
   const [loading, setLoading] = useState(false)
   const [notComputedReason, setNotComputedReason] = useState<string | null>(initialReason)
@@ -67,6 +68,7 @@ export function ViewOverlay({ parcelId, lat, lng, parcelGeometry, initialAnalysi
       <div className="pe-view-header">
         <div className="pe-view-icon">🏔</div>
         <h3>View Analysis</h3>
+        {statusLabel && <span className="pe-overlay-status-chip">{statusLabel}</span>}
         <button className="pe-view-close" onClick={onClose}>✕</button>
       </div>
 

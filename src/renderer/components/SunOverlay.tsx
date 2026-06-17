@@ -19,11 +19,12 @@ interface SunOverlayProps {
   parcelGeometry?: Geometry | null
   initialAnalysis?: SunAnalysis | null
   initialReason?: string | null
+  statusLabel?: string | null
   visible: boolean
   onClose: () => void
 }
 
-export function SunOverlay({ parcelId, lat, lng, parcelGeometry, initialAnalysis = null, initialReason = null, visible, onClose }: SunOverlayProps) {
+export function SunOverlay({ parcelId, lat, lng, parcelGeometry, initialAnalysis = null, initialReason = null, statusLabel = null, visible, onClose }: SunOverlayProps) {
   const [analysis, setAnalysis] = useState<SunAnalysis | null>(initialAnalysis)
   const [loading, setLoading] = useState(false)
   const [notComputedReason, setNotComputedReason] = useState<string | null>(initialReason)
@@ -87,6 +88,7 @@ export function SunOverlay({ parcelId, lat, lng, parcelGeometry, initialAnalysis
       <div className="pe-sun-header">
         <div className="pe-sun-icon">☀</div>
         <h3>Sun Simulator</h3>
+        {statusLabel && <span className="pe-overlay-status-chip">{statusLabel}</span>}
         <button className="pe-sun-close" onClick={onClose}>✕</button>
       </div>
 

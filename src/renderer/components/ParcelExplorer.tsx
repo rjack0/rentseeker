@@ -4799,6 +4799,7 @@ export function ParcelExplorer() {
         parcelGeometry={selectedParcelGeometry}
         initialAnalysis={analysisBundle?.sun?.analysis ?? null}
         initialReason={analysisBundle?.sun?.computed === false ? analysisBundle?.sun?.reason ?? 'Not computed' : null}
+        statusLabel={analysisBundle?.status ? `${analysisBundle.status.sun.cached ? 'cached' : 'live'}${analysisBundle.status.sun.updatedAt ? ` · ${new Date(analysisBundle.status.sun.updatedAt).toLocaleDateString()}` : ''}` : null}
         visible={showSun}
         onClose={() => setShowSun(false)}
       />
@@ -4811,6 +4812,7 @@ export function ParcelExplorer() {
         parcelGeometry={selectedParcelGeometry}
         initialAnalysis={analysisBundle?.view?.analysis ?? null}
         initialReason={analysisBundle?.view?.computed === false ? analysisBundle?.view?.reason ?? 'Not computed' : null}
+        statusLabel={analysisBundle?.status ? `${analysisBundle.status.view.cached ? 'cached' : 'live'}${analysisBundle.status.view.updatedAt ? ` · ${new Date(analysisBundle.status.view.updatedAt).toLocaleDateString()}` : ''}` : null}
         visible={showView}
         onClose={() => setShowView(false)}
       />
@@ -4825,6 +4827,7 @@ export function ParcelExplorer() {
         terrainMetrics={terrainMetrics}
         parcelGeometry={selectedParcelGeometry}
         initialRuns={analysisBundle?.buildRuns ?? []}
+        statusLabel={analysisBundle?.status ? `${analysisBundle.status.build.geometryMatchedCount || analysisBundle.status.build.runCount} stored` : null}
         visible={showBuild}
         onClose={() => setShowBuild(false)}
         onRunComplete={handleBuildRunComplete}

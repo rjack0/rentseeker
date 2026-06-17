@@ -27,10 +27,10 @@ const api: DashboardApi = {
     ipcRenderer.invoke('dashboard:get-terrain-product', parcelId),
   getSlopeAtPoint: (lat, lng) =>
     ipcRenderer.invoke('dashboard:get-slope-at-point', lat, lng),
-  getSunAnalysis: (parcelId, lat, lng, date) =>
-    ipcRenderer.invoke('dashboard:get-sun-analysis', parcelId, lat, lng, date),
-  getViewAnalysis: (parcelId, lat, lng, stories) =>
-    ipcRenderer.invoke('dashboard:get-view-analysis', parcelId, lat, lng, stories),
+  getSunAnalysis: (parcelId, lat, lng, date, geometry) =>
+    ipcRenderer.invoke('dashboard:get-sun-analysis', parcelId, lat, lng, date, geometry),
+  getViewAnalysis: (parcelId, lat, lng, stories, geometry) =>
+    ipcRenderer.invoke('dashboard:get-view-analysis', parcelId, lat, lng, stories, geometry),
   runBuildSimulation: (input, lat, lng, lotSqft) =>
     ipcRenderer.invoke('dashboard:run-build-simulation', input, lat, lng, lotSqft),
   getBuildRunsForParcel: (parcelId, geometryHash) =>

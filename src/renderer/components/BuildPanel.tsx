@@ -23,6 +23,7 @@ interface BuildPanelProps {
   terrainMetrics: TerrainMetrics | null
   parcelGeometry?: Geometry | null
   initialRuns?: BuildRunOutput[]
+  statusLabel?: string | null
   visible: boolean
   onClose: () => void
   onRunComplete?: (run: BuildRunOutput) => void
@@ -50,7 +51,7 @@ function flagLabel(flag: string): string {
   return flag.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 }
 
-export function BuildPanel({ parcelId, lat, lng, useCode, squareFootage, terrainMetrics, parcelGeometry, initialRuns = [], visible, onClose, onRunComplete }: BuildPanelProps) {
+export function BuildPanel({ parcelId, lat, lng, useCode, squareFootage, terrainMetrics, parcelGeometry, initialRuns = [], statusLabel = null, visible, onClose, onRunComplete }: BuildPanelProps) {
   const [results, setResults] = useState<Map<string, BuildRunOutput>>(new Map())
   const [loading, setLoading] = useState<string | null>(null)
   const [selectedResult, setSelectedResult] = useState<string | null>(null)
@@ -119,6 +120,7 @@ export function BuildPanel({ parcelId, lat, lng, useCode, squareFootage, terrain
       <div className="pe-build-header">
         <div className="pe-build-icon">🏗</div>
         <h3>Construction Simulator</h3>
+        {statusLabel && <span className="pe-overlay-status-chip">{statusLabel}</span>}
         <button className="pe-build-close" onClick={onClose}>✕</button>
       </div>
 

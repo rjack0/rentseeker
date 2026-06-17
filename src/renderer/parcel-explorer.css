@@ -2094,6 +2094,20 @@
   color: rgba(255,255,255,0.45);
 }
 
+.pe-overlay-status-chip {
+  margin-left: auto;
+  margin-right: 8px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(171, 255, 2, 0.2);
+  background: rgba(171, 255, 2, 0.08);
+  color: var(--pe-accent);
+  font-family: var(--pe-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .pe-empty-state {
   position: fixed;
   inset: calc(var(--pe-header-h) + 84px) calc(var(--pe-sidebar-w) + 280px) calc(var(--pe-bottom-bar-h) + 36px) 48px;
