@@ -422,6 +422,9 @@ export interface ParcelFilterQuery {
   zipCode?: string
   cityTaxRateArea?: string
   taxRateAreaCode?: string
+  ownerName?: string
+  ownerPortfolioMin?: number
+  ownerPortfolioMax?: number
   /** Year built range */
   yearBuiltMin?: number
   yearBuiltMax?: number

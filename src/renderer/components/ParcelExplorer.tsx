@@ -407,6 +407,9 @@ function filterModeActive(filter: ParcelFilterQuery): boolean {
     filter.zipCode ||
     filter.cityTaxRateArea ||
     filter.taxRateAreaCode ||
+    filter.ownerName ||
+    filter.ownerPortfolioMin != null ||
+    filter.ownerPortfolioMax != null ||
     filter.yearBuiltMin != null ||
     filter.yearBuiltMax != null ||
     filter.effectiveYearMin != null ||
@@ -481,7 +484,11 @@ function requiresEnrichedCount(filter: ParcelFilterQuery): boolean {
     filter.submittedPermitCountMin != null ||
     filter.submittedPermitCountMax != null ||
     filter.inspectionCountMin != null ||
-    filter.inspectionCountMax != null
+    filter.inspectionCountMax != null ||
+    Boolean(filter.ownerName?.trim()) ||
+    filter.ownerPortfolioMin != null ||
+    filter.ownerPortfolioMax != null ||
+    filter.sortField === 'ownerPortfolioCount'
   )
 }
 
@@ -520,6 +527,9 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
   const [localZipCode, setLocalZipCode] = useState(filter.zipCode ?? '')
   const [localCityTaxRateArea, setLocalCityTaxRateArea] = useState(filter.cityTaxRateArea ?? '')
   const [localTaxRateAreaCode, setLocalTaxRateAreaCode] = useState(filter.taxRateAreaCode ?? '')
+  const [localOwnerName, setLocalOwnerName] = useState(filter.ownerName ?? '')
+  const [localOwnerPortfolioMin, setLocalOwnerPortfolioMin] = useState(filter.ownerPortfolioMin?.toString() ?? '')
+  const [localOwnerPortfolioMax, setLocalOwnerPortfolioMax] = useState(filter.ownerPortfolioMax?.toString() ?? '')
   const [localBedMin, setLocalBedMin] = useState(filter.bedMin?.toString() ?? '')
   const [localBathMin, setLocalBathMin] = useState(filter.bathMin?.toString() ?? '')
   const [localUnitMin, setLocalUnitMin] = useState(filter.unitMin?.toString() ?? '')
@@ -587,6 +597,9 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
     setLocalZipCode(filter.zipCode ?? '')
     setLocalCityTaxRateArea(filter.cityTaxRateArea ?? '')
     setLocalTaxRateAreaCode(filter.taxRateAreaCode ?? '')
+    setLocalOwnerName(filter.ownerName ?? '')
+    setLocalOwnerPortfolioMin(filter.ownerPortfolioMin?.toString() ?? '')
+    setLocalOwnerPortfolioMax(filter.ownerPortfolioMax?.toString() ?? '')
     setLocalBedMin(filter.bedMin?.toString() ?? '')
     setLocalBathMin(filter.bathMin?.toString() ?? '')
     setLocalUnitMin(filter.unitMin?.toString() ?? '')
@@ -647,6 +660,9 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
     filter.zipCode,
     filter.cityTaxRateArea,
     filter.taxRateAreaCode,
+    filter.ownerName,
+    filter.ownerPortfolioMin,
+    filter.ownerPortfolioMax,
     filter.bedMin,
     filter.bathMin,
     filter.unitMin,
@@ -890,6 +906,42 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
           />
         </div>
 
+        <div className="pe-filter-group wide">
+          <label className="pe-filter-label">OWNER</label>
+          <input
+            className="pe-filter-input"
+            placeholder="Owner / trust / LLC"
+            value={localOwnerName}
+            onChange={e => setLocalOwnerName(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ ownerName: localOwnerName.trim() || undefined })}
+            onBlur={() => applyFilter({ ownerName: localOwnerName.trim() || undefined })}
+          />
+        </div>
+
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">OWNER PARCELS ≥</label>
+          <input
+            className="pe-filter-input tiny"
+            placeholder="2"
+            value={localOwnerPortfolioMin}
+            onChange={e => setLocalOwnerPortfolioMin(e.target.value.replace(/[^0-9]/g, ''))}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ ownerPortfolioMin: parseNumericInput(localOwnerPortfolioMin) })}
+            onBlur={() => applyFilter({ ownerPortfolioMin: parseNumericInput(localOwnerPortfolioMin) })}
+          />
+        </div>
+
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">OWNER PARCELS ≤</label>
+          <input
+            className="pe-filter-input tiny"
+            placeholder="999"
+            value={localOwnerPortfolioMax}
+            onChange={e => setLocalOwnerPortfolioMax(e.target.value.replace(/[^0-9]/g, ''))}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ ownerPortfolioMax: parseNumericInput(localOwnerPortfolioMax) })}
+            onBlur={() => applyFilter({ ownerPortfolioMax: parseNumericInput(localOwnerPortfolioMax) })}
+          />
+        </div>
+
         <div className="pe-filter-group">
           <label className="pe-filter-label">BEDS ≥</label>
           <input
@@ -964,6 +1016,7 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
             <option value="useCode3">Use Code 3rd</option>
             <option value="city">City</option>
             <option value="zipCode">ZIP</option>
+            <option value="ownerPortfolioCount">Owner portfolio</option>
             <option value="cityTaxRateArea">City Tax Area</option>
             <option value="taxRateAreaCode">Tax Area Code</option>
             <option value="landBaseYear">Land Base Year</option>
@@ -1092,6 +1145,15 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
         {filter.taxRateAreaCode && (
           <span className="pe-pill">TRA {filter.taxRateAreaCode} <button onClick={() => { setLocalTaxRateAreaCode(''); applyFilter({ taxRateAreaCode: undefined }) }}>×</button></span>
         )}
+        {filter.ownerName && (
+          <span className="pe-pill">Owner {filter.ownerName} <button onClick={() => { setLocalOwnerName(''); applyFilter({ ownerName: undefined }) }}>×</button></span>
+        )}
+        {filter.ownerPortfolioMin != null && (
+          <span className="pe-pill">Owner parcels ≥ {filter.ownerPortfolioMin} <button onClick={() => { setLocalOwnerPortfolioMin(''); applyFilter({ ownerPortfolioMin: undefined }) }}>×</button></span>
+        )}
+        {filter.ownerPortfolioMax != null && (
+          <span className="pe-pill">Owner parcels ≤ {filter.ownerPortfolioMax} <button onClick={() => { setLocalOwnerPortfolioMax(''); applyFilter({ ownerPortfolioMax: undefined }) }}>×</button></span>
+        )}
         {filter.regionNumber && (
           <span className="pe-pill">Region {filter.regionNumber} <button onClick={() => { setLocalRegionNumber(''); applyFilter({ regionNumber: undefined }) }}>×</button></span>
         )}
@@ -1139,6 +1201,18 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
           <div className="pe-filter-group">
             <label className="pe-filter-label">ZIP</label>
             <input className="pe-filter-input small" value={localZipCode} placeholder="90210" onChange={e => setLocalZipCode(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ zipCode: localZipCode || undefined })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">OWNER NAME</label>
+            <input className="pe-filter-input small" value={localOwnerName} placeholder="trust / llc / family" onChange={e => setLocalOwnerName(e.target.value)} onBlur={() => applyFilter({ ownerName: localOwnerName.trim() || undefined })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">OWNER PARCELS MIN</label>
+            <input className="pe-filter-input small" value={localOwnerPortfolioMin} placeholder="2" onChange={e => setLocalOwnerPortfolioMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ ownerPortfolioMin: parseNumericInput(localOwnerPortfolioMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">OWNER PARCELS MAX</label>
+            <input className="pe-filter-input small" value={localOwnerPortfolioMax} placeholder="999" onChange={e => setLocalOwnerPortfolioMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ ownerPortfolioMax: parseNumericInput(localOwnerPortfolioMax) })} />
           </div>
           <div className="pe-filter-group">
             <label className="pe-filter-label">CITY TAX AREA</label>
@@ -2905,16 +2979,11 @@ function MapView({
         raf = requestAnimationFrame(tick)
       }
 
-      // Fit bounds on first load only
+      // Keep the operator's viewport stable. Warm the first render cycle without auto-fitting
+      // into whatever sample/query came back, otherwise the map, dossier, and conveyor drift
+      // into different states during viewport refreshes.
       if (!initialFitDone.current && geolocated.length > 0) {
         initialFitDone.current = true
-        const bounds = new maplibregl.LngLatBounds()
-        geolocated.forEach(p => bounds.extend([p.longitude!, p.latitude!]))
-        if (geolocated.length > 1) {
-          map.fitBounds(bounds, { padding: 80, maxZoom: 15, duration: 1200 })
-        } else {
-          map.flyTo({ center: [geolocated[0].longitude!, geolocated[0].latitude!], zoom: 15, duration: 1200 })
-        }
       }
     }
 
@@ -3403,6 +3472,7 @@ export function ParcelExplorer() {
 
   const { dotRef, ringRef, hovering, setHovering } = useCustomCursor()
   const firstLoadRef = useRef(true)
+  const initialAutoSelectDoneRef = useRef(false)
   const viewportReloadRef = useRef<number | null>(null)
   const sbfRepairAttemptedRef = useRef(false)
   const loadInFlightRef = useRef(false)
@@ -3438,6 +3508,9 @@ export function ParcelExplorer() {
       zipCode: filterQuery.zipCode ?? '',
       cityTaxRateArea: filterQuery.cityTaxRateArea ?? '',
       taxRateAreaCode: filterQuery.taxRateAreaCode ?? '',
+      ownerName: filterQuery.ownerName ?? '',
+      ownerPortfolioMin: filterQuery.ownerPortfolioMin ?? null,
+      ownerPortfolioMax: filterQuery.ownerPortfolioMax ?? null,
       valueMin: filterQuery.valueMin ?? null,
       valueMax: filterQuery.valueMax ?? null,
       yearBuiltMin: filterQuery.yearBuiltMin ?? null,
@@ -3933,8 +4006,9 @@ export function ParcelExplorer() {
         }).catch(() => undefined)
       }
       setRuntimeGateStage('owner')
-      if (!selectedParcel && data.allParcels?.length > 0) {
+      if (!initialAutoSelectDoneRef.current && !activeParcelKey && data.allParcels?.length > 0) {
         const first = data.targetParcels[0] ?? data.allParcels[0]
+        initialAutoSelectDoneRef.current = true
         setActiveParcelKey(first.ain || first.assessorId)
         setSelectedParcel(first)
         setSelectedParcelIds(new Set(parcelRecordKeys(first)))
@@ -3959,7 +4033,7 @@ export function ParcelExplorer() {
         void loadData(queued.filterQuery, queued.showAssembly)
       }
     }
-  }, [api, markAssembly, parcelLoadSignature, selectedParcel])
+  }, [activeParcelKey, api, markAssembly, parcelLoadSignature])
 
   // Initial load
   useEffect(() => {
@@ -4097,7 +4171,10 @@ export function ParcelExplorer() {
     if (polygon) setPolygonInteractionOk(true)
     setBottomBarCollapsed(false)
     setDossierCollapsed(false)
-    setSelectedParcelIds(new Set(polygon ? parcelPolygonKeys(polygon) : [parcelKey]))
+    const normalizedKey = String(parcelKey).replace(/[^0-9]/g, '')
+    setActiveParcelKey(normalizedKey || parcelKey)
+    setSelectedParcel(null)
+    setSelectedParcelIds(new Set(polygon ? parcelPolygonKeys(polygon) : [normalizedKey || parcelKey]))
     if (polygon && !selectionLocked) setSelectedGroupPolygons([polygon])
     try {
       if (!api) throw new Error('RentSeeker desktop API is unavailable')
@@ -4109,7 +4186,7 @@ export function ParcelExplorer() {
         return
       }
       const pool = warmParcelPoolRef.current
-      const normalized = parcelKey.replace(/[^0-9]/g, '')
+      const normalized = normalizedKey
       const pooled = pool.get(parcelKey) ?? pool.get(normalized)
       if (pooled) {
         setResult(current => mergeParcelIntoResult(current, pooled))
@@ -4145,15 +4222,16 @@ export function ParcelExplorer() {
     setBottomBarCollapsed(false)
     setDossierCollapsed(false)
     const nextKeys = new Set(polygons.flatMap(parcelPolygonKeys))
-    setSelectedParcelIds(current => {
-      if (mode === 'add') return new Set([...current, ...nextKeys])
-      if (mode === 'subtract') {
-        const reduced = new Set(current)
-        nextKeys.forEach(key => reduced.delete(key))
-        return reduced
-      }
-      return nextKeys
-    })
+    const resolvedSelectionKeys = mode === 'add'
+      ? new Set([...selectedParcelIds, ...nextKeys])
+      : mode === 'subtract'
+        ? (() => {
+            const reduced = new Set(selectedParcelIds)
+            nextKeys.forEach(key => reduced.delete(key))
+            return reduced
+          })()
+        : nextKeys
+    setSelectedParcelIds(resolvedSelectionKeys)
     setSelectedGroupPolygons(current => {
       if (selectionLocked && current.length > 0) return current
       if (mode === 'add') {
@@ -4168,12 +4246,21 @@ export function ParcelExplorer() {
       return polygons
     })
     const first = polygons[0]
-    if (first && mode !== 'subtract') void handleSelectParcelByKey(first.ain || first.apn, first)
-  }, [handleSelectParcelByKey, selectionLocked])
+    if (first && mode !== 'subtract') {
+      void handleSelectParcelByKey(first.ain || first.apn, first)
+      return
+    }
+    if (mode === 'subtract' && activeParcelKey && resolvedSelectionKeys && !resolvedSelectionKeys.has(activeParcelKey)) {
+      setSelectedParcel(null)
+      setActiveParcelKey(null)
+    }
+  }, [activeParcelKey, handleSelectParcelByKey, selectedParcelIds, selectionLocked])
 
   const clearGroupSelection = useCallback(() => {
     setSelectedParcelIds(new Set())
     setSelectedGroupPolygons([])
+    setSelectedParcel(null)
+    setActiveParcelKey(null)
   }, [])
 
   const saveCurrentSelection = useCallback(() => {
@@ -4231,25 +4318,14 @@ export function ParcelExplorer() {
     if (!result) return
     if (!result.allParcels.length) {
       setSelectedParcel(null)
-      setActiveParcelKey(null)
       return
     }
     if (!activeParcelKey) {
-      const first = result.targetParcels[0] ?? result.allParcels[0]
-      if (first) {
-        setSelectedParcel(first)
-        setActiveParcelKey(first.ain || first.assessorId)
-      }
       return
     }
     const canonical = result.allParcels.find((parcel) => parcelMatchesKey(parcel, activeParcelKey))
     if (!canonical) {
-      const fallback = result.targetParcels[0] ?? result.allParcels[0]
-      if (fallback) {
-        setSelectedParcel(fallback)
-        setActiveParcelKey(fallback.ain || fallback.assessorId)
-        setSelectedParcelIds(new Set(parcelRecordKeys(fallback)))
-      }
+      setSelectedParcel(null)
       return
     }
     if (!selectedParcel || selectedParcel.assessorId !== canonical.assessorId) {
@@ -4318,8 +4394,11 @@ export function ParcelExplorer() {
 
   const totalParcelUniverse = datasetTotals['LA County Assessor Parcels'] ?? result?.totalFound ?? 0
   const loadedRecordCount = result?.returnedCount ?? displayedParcels.length
-  const totalMatchingParcels = matchingCount ?? result?.totalFound ?? loadedRecordCount
   const activeFilterMode = useMemo(() => filterModeActive(filter), [filter])
+  const totalMatchingParcels = matchingCount
+    ?? ((activeFilterMode && visibleBoundaryCount > loadedRecordCount)
+      ? visibleBoundaryCount
+      : (result?.totalFound ?? loadedRecordCount))
 
   // Max value for bar normalization
   const maxTotalValue = useMemo(() => {

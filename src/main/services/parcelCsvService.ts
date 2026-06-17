@@ -11,6 +11,7 @@ import { existsSync } from 'fs'
 
 import type { ParcelRecord, ParcelQueryResult, ParcelFilterQuery, DataSource } from '@shared/types'
 import { rentSeekerStore } from './rentSeekerStore'
+import { OwnerService } from './ownerService'
 
 /* ═══════════════ DATA PATHS ═══════════════ */
 
@@ -32,6 +33,8 @@ const TRANSIT_ANCHORS = [
   { name: 'Santa Monica Downtown', lat: 34.0140, lng: -118.4914 },
   { name: 'LAX/Metro Transit Center', lat: 33.9454, lng: -118.3772 }
 ]
+
+const ownerService = new OwnerService()
 
 /* ═══════════════ NORMALIZER ═══════════════ */
 
@@ -406,6 +409,9 @@ export class ParcelCsvService {
         return true
       })
     }
+    if (filter.ownerName?.trim() || filter.ownerPortfolioMin != null || filter.ownerPortfolioMax != null || filter.sortField === 'ownerPortfolioCount') {
+      allParcels = await this.enrichAndFilterByOwnerPortfolio(allParcels, filter)
+    }
 
     // Persist identity/provenance in the background so viewport queries return immediately.
     // The UI does not need to wait for this bookkeeping to finish before showing results.
@@ -681,6 +687,57 @@ export class ParcelCsvService {
       console.error('[ParcelCsvService] inspection enrichment failed:', err)
       return new Map()
     }
+  }
+
+  private async enrichAndFilterByOwnerPortfolio(parcels: ParcelRecord[], filter: ParcelFilterQuery): Promise<ParcelRecord[]> {
+    if (parcels.length === 0) return parcels
+
+    const ownerByAin = new Map<string, { ownerName: string; parcelCount: number }>()
+    const ownerCountCache = new Map<string, number>()
+
+    const enriched = await Promise.all(parcels.map(async (parcel) => {
+      const ain = String(parcel.ain || parcel.assessorId).replace(/[^0-9]/g, '')
+      if (!ain) return parcel
+      try {
+        const owner = await ownerService.getOwnerByAin(ain)
+        const ownerName = String(owner?.ownerName ?? '').trim()
+        if (!ownerName) return parcel
+        let parcelCount = ownerCountCache.get(ownerName)
+        if (parcelCount == null) {
+          parcelCount = await ownerService.getOwnerPortfolioCount(ownerName)
+          ownerCountCache.set(ownerName, parcelCount)
+        }
+        ownerByAin.set(ain, { ownerName, parcelCount })
+        return {
+          ...parcel,
+          contractorName: parcel.contractorName || ownerName
+        }
+      } catch {
+        return parcel
+      }
+    }))
+
+    let filtered = enriched.filter((parcel) => {
+      const ain = String(parcel.ain || parcel.assessorId).replace(/[^0-9]/g, '')
+      const ownerInfo = ownerByAin.get(ain)
+      const ownerName = ownerInfo?.ownerName ?? ''
+      const ownerCount = ownerInfo?.parcelCount ?? 0
+      if (filter.ownerName?.trim() && !ownerName.toLowerCase().includes(filter.ownerName.trim().toLowerCase())) return false
+      if (filter.ownerPortfolioMin != null && ownerCount < filter.ownerPortfolioMin) return false
+      if (filter.ownerPortfolioMax != null && ownerCount > filter.ownerPortfolioMax) return false
+      return true
+    })
+
+    if (filter.sortField === 'ownerPortfolioCount') {
+      const dir = filter.sortDir === 'asc' ? 1 : -1
+      filtered = filtered.sort((a, b) => {
+        const aCount = ownerByAin.get(String(a.ain || a.assessorId).replace(/[^0-9]/g, ''))?.parcelCount ?? 0
+        const bCount = ownerByAin.get(String(b.ain || b.assessorId).replace(/[^0-9]/g, ''))?.parcelCount ?? 0
+        return (aCount - bCount) * dir
+      })
+    }
+
+    return filtered
   }
 
   /* -------- WHERE clause builder -------- */

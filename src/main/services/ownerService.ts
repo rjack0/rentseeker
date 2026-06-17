@@ -43,6 +43,8 @@ export class OwnerService {
   private sbfBuildPromise: Promise<void> | null = null
   private ownerByAinCache: Map<string, OwnerRecord | null> = new Map()
   private ownerByAinCacheLimit = 1500
+  private ownerPortfolioCountCache: Map<string, number> = new Map()
+  private ownerPortfolioCountCacheLimit = 2000
 
   async initialize(): Promise<void> {
     if (this.connection) return
@@ -235,6 +237,31 @@ export class OwnerService {
       cities,
       zoningCodes
     }
+  }
+
+  async getOwnerPortfolioCount(ownerName: string): Promise<number> {
+    await this.ensureSbfTable()
+    const normalized = normalizeOwnerName(ownerName)
+    if (!normalized) return 0
+    const cached = this.ownerPortfolioCountCache.get(normalized)
+    if (cached != null) return cached
+
+    const escaped = normalized.replace(/'/g, "''")
+    const tokens = ownerNameTokens(ownerName)
+    const tokenClause = tokens.length > 0
+      ? ` OR (${tokens.map(token => `first_owner_name ILIKE '%${token.replace(/'/g, "''")}%'`).join(' AND ')})`
+      : ''
+
+    const rows = await this.query(
+      `SELECT COUNT(*) AS cnt FROM sbf WHERE first_owner_name ILIKE '%${escaped}%'${tokenClause}`
+    )
+    const count = Number(rows[0]?.cnt ?? 0)
+    this.ownerPortfolioCountCache.set(normalized, count)
+    if (this.ownerPortfolioCountCache.size > this.ownerPortfolioCountCacheLimit) {
+      const first = this.ownerPortfolioCountCache.keys().next().value
+      if (first) this.ownerPortfolioCountCache.delete(first)
+    }
+    return count
   }
 
   /**
