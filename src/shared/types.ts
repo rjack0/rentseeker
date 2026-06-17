@@ -412,11 +412,76 @@ export interface ParcelFilterQuery {
   valueMax?: number
   /** Filter to parcels with C-of-O issued */
   hasCofO?: boolean
+  /** Built/unbuilt mode */
+  builtState?: 'all' | 'built' | 'unbuilt'
   /** Property use type filter */
   useType?: string
   /** Year built range */
   yearBuiltMin?: number
   yearBuiltMax?: number
+  /** Effective year range */
+  effectiveYearMin?: number
+  effectiveYearMax?: number
+  /** Assessment roll year range */
+  rollYearMin?: number
+  rollYearMax?: number
+  /** Building square footage range */
+  sqftMin?: number
+  sqftMax?: number
+  /** Bedroom count range */
+  bedMin?: number
+  bedMax?: number
+  /** Bathroom count range */
+  bathMin?: number
+  bathMax?: number
+  /** Unit count range */
+  unitMin?: number
+  unitMax?: number
+  /** Building count range */
+  buildingCountMin?: number
+  buildingCountMax?: number
+  /** Permit/inspection count ranges */
+  buildingPermitCountMin?: number
+  buildingPermitCountMax?: number
+  electricalPermitCountMin?: number
+  electricalPermitCountMax?: number
+  submittedPermitCountMin?: number
+  submittedPermitCountMax?: number
+  inspectionCountMin?: number
+  inspectionCountMax?: number
+  /** Stories / form */
+  storiesMin?: number
+  storiesMax?: number
+  propertyTaxable?: string
+  classification?: string
+  regionNumber?: string
+  clusterCode?: string
+  /** Base year ranges */
+  landBaseYearMin?: number
+  landBaseYearMax?: number
+  improvementBaseYearMin?: number
+  improvementBaseYearMax?: number
+  /** Assessed value component ranges */
+  landValueMin?: number
+  landValueMax?: number
+  improvementValueMin?: number
+  improvementValueMax?: number
+  taxableValueMin?: number
+  taxableValueMax?: number
+  homeOwnersExemptionMin?: number
+  homeOwnersExemptionMax?: number
+  realEstateExemptionMin?: number
+  realEstateExemptionMax?: number
+  fixtureValueMin?: number
+  fixtureValueMax?: number
+  fixtureExemptionMin?: number
+  fixtureExemptionMax?: number
+  personalPropertyValueMin?: number
+  personalPropertyValueMax?: number
+  personalPropertyExemptionMin?: number
+  personalPropertyExemptionMax?: number
+  totalExemptionMin?: number
+  totalExemptionMax?: number
   /** Viewport bounds for map-based loading */
   bounds?: MapBounds
   /** Sort column */

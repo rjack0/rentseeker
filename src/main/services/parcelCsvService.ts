@@ -262,6 +262,7 @@ export class ParcelCsvService {
           COALESCE("Number of Bedrooms", 0) AS number_of_bedrooms,
           COALESCE("Number of Bathrooms", 0) AS number_of_bathrooms,
           COALESCE("Number of Units", 0) AS number_of_units,
+          COALESCE(TRY_CAST("Number of Stories" AS DOUBLE), 0) AS number_of_stories,
           "Location Latitude" AS latitude,
           "Location Longitude" AS longitude,
           "Recording Date" AS recording_date,
@@ -323,6 +324,7 @@ export class ParcelCsvService {
         number_of_bedrooms,
         number_of_bathrooms,
         number_of_units,
+        number_of_stories,
         latitude,
         longitude,
         recording_date,
@@ -381,6 +383,28 @@ export class ParcelCsvService {
     // If hasCofO filter is set, post-filter
     if (filter.hasCofO === true) {
       allParcels = allParcels.filter(p => p.dataSource === 'both')
+    }
+    if (
+      filter.buildingPermitCountMin != null || filter.buildingPermitCountMax != null ||
+      filter.electricalPermitCountMin != null || filter.electricalPermitCountMax != null ||
+      filter.submittedPermitCountMin != null || filter.submittedPermitCountMax != null ||
+      filter.inspectionCountMin != null || filter.inspectionCountMax != null
+    ) {
+      allParcels = allParcels.filter((parcel) => {
+        const building = Number(parcel.buildingPermitCount ?? 0)
+        const electrical = Number(parcel.electricalPermitCount ?? 0)
+        const submitted = Number(parcel.submittedBuildingPermitCount ?? 0)
+        const inspections = Number(parcel.inspectionCount ?? 0)
+        if (filter.buildingPermitCountMin != null && building < filter.buildingPermitCountMin) return false
+        if (filter.buildingPermitCountMax != null && building > filter.buildingPermitCountMax) return false
+        if (filter.electricalPermitCountMin != null && electrical < filter.electricalPermitCountMin) return false
+        if (filter.electricalPermitCountMax != null && electrical > filter.electricalPermitCountMax) return false
+        if (filter.submittedPermitCountMin != null && submitted < filter.submittedPermitCountMin) return false
+        if (filter.submittedPermitCountMax != null && submitted > filter.submittedPermitCountMax) return false
+        if (filter.inspectionCountMin != null && inspections < filter.inspectionCountMin) return false
+        if (filter.inspectionCountMax != null && inspections > filter.inspectionCountMax) return false
+        return true
+      })
     }
 
     // Persist identity/provenance in the background so viewport queries return immediately.
@@ -689,6 +713,14 @@ export class ParcelCsvService {
       conditions.push(`COALESCE("Total Value", 0) <= ${filter.valueMax}`)
     }
 
+    // Built / unbuilt
+    if (filter.builtState === 'built') {
+      conditions.push('(COALESCE("Number of Buildings", 0) > 0 OR COALESCE("Year Built", 0) > 0)')
+    }
+    if (filter.builtState === 'unbuilt') {
+      conditions.push('(COALESCE("Number of Buildings", 0) <= 0 AND COALESCE("Year Built", 0) <= 0)')
+    }
+
     // Use type
     if (filter.useType) {
       conditions.push(`"Property Use Type" = '${filter.useType.replace(/'/g, "''")}'`)
@@ -700,6 +732,150 @@ export class ParcelCsvService {
     }
     if (filter.yearBuiltMax != null) {
       conditions.push(`COALESCE("Year Built", 0) <= ${filter.yearBuiltMax}`)
+    }
+    if (filter.effectiveYearMin != null && filter.effectiveYearMin > 0) {
+      conditions.push(`COALESCE("Effective Year", 0) >= ${filter.effectiveYearMin}`)
+    }
+    if (filter.effectiveYearMax != null) {
+      conditions.push(`COALESCE("Effective Year", 0) <= ${filter.effectiveYearMax}`)
+    }
+    if (filter.rollYearMin != null && filter.rollYearMin > 0) {
+      conditions.push(`COALESCE("Roll Year", 0) >= ${filter.rollYearMin}`)
+    }
+    if (filter.rollYearMax != null) {
+      conditions.push(`COALESCE("Roll Year", 0) <= ${filter.rollYearMax}`)
+    }
+
+    // Square footage
+    if (filter.sqftMin != null && filter.sqftMin > 0) {
+      conditions.push(`COALESCE("Square Footage", 0) >= ${filter.sqftMin}`)
+    }
+    if (filter.sqftMax != null) {
+      conditions.push(`COALESCE("Square Footage", 0) <= ${filter.sqftMax}`)
+    }
+
+    // Bedrooms
+    if (filter.bedMin != null && filter.bedMin > 0) {
+      conditions.push(`COALESCE("Number of Bedrooms", 0) >= ${filter.bedMin}`)
+    }
+    if (filter.bedMax != null) {
+      conditions.push(`COALESCE("Number of Bedrooms", 0) <= ${filter.bedMax}`)
+    }
+
+    // Bathrooms
+    if (filter.bathMin != null && filter.bathMin > 0) {
+      conditions.push(`COALESCE("Number of Bathrooms", 0) >= ${filter.bathMin}`)
+    }
+    if (filter.bathMax != null) {
+      conditions.push(`COALESCE("Number of Bathrooms", 0) <= ${filter.bathMax}`)
+    }
+
+    // Units
+    if (filter.unitMin != null && filter.unitMin > 0) {
+      conditions.push(`COALESCE("Number of Units", 0) >= ${filter.unitMin}`)
+    }
+    if (filter.unitMax != null) {
+      conditions.push(`COALESCE("Number of Units", 0) <= ${filter.unitMax}`)
+    }
+
+    // Building count
+    if (filter.buildingCountMin != null && filter.buildingCountMin > 0) {
+      conditions.push(`COALESCE("Number of Buildings", 0) >= ${filter.buildingCountMin}`)
+    }
+    if (filter.buildingCountMax != null) {
+      conditions.push(`COALESCE("Number of Buildings", 0) <= ${filter.buildingCountMax}`)
+    }
+    if (filter.storiesMin != null && filter.storiesMin > 0) {
+      conditions.push(`COALESCE(TRY_CAST("Number of Stories" AS DOUBLE), 0) >= ${filter.storiesMin}`)
+    }
+    if (filter.storiesMax != null) {
+      conditions.push(`COALESCE(TRY_CAST("Number of Stories" AS DOUBLE), 0) <= ${filter.storiesMax}`)
+    }
+
+    if (filter.landBaseYearMin != null && filter.landBaseYearMin > 0) {
+      conditions.push(`COALESCE("Land Base Year", 0) >= ${filter.landBaseYearMin}`)
+    }
+    if (filter.landBaseYearMax != null) {
+      conditions.push(`COALESCE("Land Base Year", 0) <= ${filter.landBaseYearMax}`)
+    }
+    if (filter.improvementBaseYearMin != null && filter.improvementBaseYearMin > 0) {
+      conditions.push(`COALESCE("Improvement Base Year", 0) >= ${filter.improvementBaseYearMin}`)
+    }
+    if (filter.improvementBaseYearMax != null) {
+      conditions.push(`COALESCE("Improvement Base Year", 0) <= ${filter.improvementBaseYearMax}`)
+    }
+
+    if (filter.landValueMin != null && filter.landValueMin > 0) {
+      conditions.push(`COALESCE("Land Value", 0) >= ${filter.landValueMin}`)
+    }
+    if (filter.landValueMax != null) {
+      conditions.push(`COALESCE("Land Value", 0) <= ${filter.landValueMax}`)
+    }
+    if (filter.improvementValueMin != null && filter.improvementValueMin > 0) {
+      conditions.push(`COALESCE("Improvement Value", 0) >= ${filter.improvementValueMin}`)
+    }
+    if (filter.improvementValueMax != null) {
+      conditions.push(`COALESCE("Improvement Value", 0) <= ${filter.improvementValueMax}`)
+    }
+    if (filter.taxableValueMin != null && filter.taxableValueMin > 0) {
+      conditions.push(`COALESCE("Taxable Value", 0) >= ${filter.taxableValueMin}`)
+    }
+    if (filter.taxableValueMax != null) {
+      conditions.push(`COALESCE("Taxable Value", 0) <= ${filter.taxableValueMax}`)
+    }
+    if (filter.homeOwnersExemptionMin != null && filter.homeOwnersExemptionMin > 0) {
+      conditions.push(`COALESCE("Home Owners Exemption", 0) >= ${filter.homeOwnersExemptionMin}`)
+    }
+    if (filter.homeOwnersExemptionMax != null) {
+      conditions.push(`COALESCE("Home Owners Exemption", 0) <= ${filter.homeOwnersExemptionMax}`)
+    }
+    if (filter.realEstateExemptionMin != null && filter.realEstateExemptionMin > 0) {
+      conditions.push(`COALESCE("Real Estate Exemption", 0) >= ${filter.realEstateExemptionMin}`)
+    }
+    if (filter.realEstateExemptionMax != null) {
+      conditions.push(`COALESCE("Real Estate Exemption", 0) <= ${filter.realEstateExemptionMax}`)
+    }
+    if (filter.fixtureValueMin != null && filter.fixtureValueMin > 0) {
+      conditions.push(`COALESCE("Fixture Value", 0) >= ${filter.fixtureValueMin}`)
+    }
+    if (filter.fixtureValueMax != null) {
+      conditions.push(`COALESCE("Fixture Value", 0) <= ${filter.fixtureValueMax}`)
+    }
+    if (filter.fixtureExemptionMin != null && filter.fixtureExemptionMin > 0) {
+      conditions.push(`COALESCE("Fixture Exemption", 0) >= ${filter.fixtureExemptionMin}`)
+    }
+    if (filter.fixtureExemptionMax != null) {
+      conditions.push(`COALESCE("Fixture Exemption", 0) <= ${filter.fixtureExemptionMax}`)
+    }
+    if (filter.personalPropertyValueMin != null && filter.personalPropertyValueMin > 0) {
+      conditions.push(`COALESCE("Personal Property Value", 0) >= ${filter.personalPropertyValueMin}`)
+    }
+    if (filter.personalPropertyValueMax != null) {
+      conditions.push(`COALESCE("Personal Property Value", 0) <= ${filter.personalPropertyValueMax}`)
+    }
+    if (filter.personalPropertyExemptionMin != null && filter.personalPropertyExemptionMin > 0) {
+      conditions.push(`COALESCE("Personal Property Exemption", 0) >= ${filter.personalPropertyExemptionMin}`)
+    }
+    if (filter.personalPropertyExemptionMax != null) {
+      conditions.push(`COALESCE("Personal Property Exemption", 0) <= ${filter.personalPropertyExemptionMax}`)
+    }
+    if (filter.totalExemptionMin != null && filter.totalExemptionMin > 0) {
+      conditions.push(`COALESCE("Total Exemption", 0) >= ${filter.totalExemptionMin}`)
+    }
+    if (filter.totalExemptionMax != null) {
+      conditions.push(`COALESCE("Total Exemption", 0) <= ${filter.totalExemptionMax}`)
+    }
+    if (filter.propertyTaxable?.trim()) {
+      conditions.push(`LOWER(COALESCE("Property Taxable", '')) = LOWER('${filter.propertyTaxable.replace(/'/g, "''")}')`)
+    }
+    if (filter.classification?.trim()) {
+      conditions.push(`LOWER(COALESCE("Classification", '')) LIKE LOWER('${filter.classification.replace(/'/g, "''")}%')`)
+    }
+    if (filter.regionNumber?.trim()) {
+      conditions.push(`LOWER(COALESCE("Region Number", '')) = LOWER('${filter.regionNumber.replace(/'/g, "''")}')`)
+    }
+    if (filter.clusterCode?.trim()) {
+      conditions.push(`LOWER(COALESCE("Cluster Code", '')) = LOWER('${filter.clusterCode.replace(/'/g, "''")}')`)
     }
 
     // Viewport bounds
@@ -734,9 +910,28 @@ export class ParcelCsvService {
       totalValue: 'total_value',
       squareFootage: 'square_footage',
       yearBuilt: 'year_built',
+      effectiveYear: 'effective_year',
+      rollYear: 'roll_year',
+      landBaseYear: 'land_base_year',
+      improvementBaseYear: 'improvement_base_year',
+      bedrooms: 'number_of_bedrooms',
+      bathrooms: 'number_of_bathrooms',
+      units: 'number_of_units',
+      buildingCount: 'number_of_buildings',
+      stories: 'number_of_stories',
       taxableValue: 'taxable_value',
       landValue: 'land_value',
-      improvementValue: 'improvement_value'
+      improvementValue: 'improvement_value',
+      homeOwnersExemption: 'home_owners_exemption',
+      realEstateExemption: 'real_estate_exemption',
+      fixtureValue: 'fixture_value',
+      fixtureExemption: 'fixture_exemption',
+      personalPropertyValue: 'personal_property_value',
+      personalPropertyExemption: 'personal_property_exemption',
+      totalExemption: 'total_exemption',
+      classification: 'classification',
+      regionNumber: 'region_number',
+      clusterCode: 'cluster_code'
     }
     if (filter.randomSample) {
       return 'ORDER BY random()'
@@ -777,6 +972,7 @@ export class ParcelCsvService {
       numberOfBedrooms: Number(row.number_of_bedrooms ?? 0),
       numberOfBathrooms: Number(row.number_of_bathrooms ?? 0),
       numberOfUnits: Number(row.number_of_units ?? 0),
+      numberOfStories: String(row.number_of_stories ?? '').trim(),
       recordingDate: String(row.recording_date ?? '').trim(),
       landValue: Number(row.land_value ?? 0),
       landBaseYear: Number(row.land_base_year ?? 0),

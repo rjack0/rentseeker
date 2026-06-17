@@ -296,6 +296,14 @@ function parcelPolygonKeys(parcel: ParcelPolygon): string[] {
   ].filter(Boolean))]
 }
 
+function parcelMatchesKey(parcel: ParcelRecord, key: string): boolean {
+  const normalized = key.replace(/[^0-9]/g, '')
+  return parcelRecordKeys(parcel).some((candidate) => {
+    const value = String(candidate)
+    return value === key || value.replace(/[^0-9]/g, '') === normalized
+  })
+}
+
 function mergeParcelIntoResult(result: ParcelQueryResult | null, parcel: ParcelRecord): ParcelQueryResult | null {
   if (!result) return result
   const alreadyPresent = result.allParcels.some(item => item.assessorId === parcel.assessorId)
@@ -352,6 +360,95 @@ function lineGeometryForPolygon(geometry: Geometry, streetClearEdges: boolean): 
   return geometry
 }
 
+function filterModeActive(filter: ParcelFilterQuery): boolean {
+  return Boolean(
+    filter.searchText?.trim() ||
+    filter.apnPrefix?.trim() ||
+    filter.targetParcels?.trim() ||
+    filter.valueMin != null ||
+    filter.valueMax != null ||
+    filter.hasCofO ||
+    (filter.builtState && filter.builtState !== 'all') ||
+    filter.useType ||
+    filter.yearBuiltMin != null ||
+    filter.yearBuiltMax != null ||
+    filter.effectiveYearMin != null ||
+    filter.effectiveYearMax != null ||
+    filter.rollYearMin != null ||
+    filter.rollYearMax != null ||
+    filter.sqftMin != null ||
+    filter.sqftMax != null ||
+    filter.bedMin != null ||
+    filter.bedMax != null ||
+    filter.bathMin != null ||
+    filter.bathMax != null ||
+    filter.unitMin != null ||
+    filter.unitMax != null ||
+    filter.buildingCountMin != null ||
+    filter.buildingCountMax != null ||
+    filter.buildingPermitCountMin != null ||
+    filter.buildingPermitCountMax != null ||
+    filter.electricalPermitCountMin != null ||
+    filter.electricalPermitCountMax != null ||
+    filter.submittedPermitCountMin != null ||
+    filter.submittedPermitCountMax != null ||
+    filter.inspectionCountMin != null ||
+    filter.inspectionCountMax != null ||
+    filter.storiesMin != null ||
+    filter.storiesMax != null ||
+    filter.propertyTaxable ||
+    filter.classification ||
+    filter.regionNumber ||
+    filter.clusterCode ||
+    filter.landBaseYearMin != null ||
+    filter.landBaseYearMax != null ||
+    filter.improvementBaseYearMin != null ||
+    filter.improvementBaseYearMax != null ||
+    filter.landValueMin != null ||
+    filter.landValueMax != null ||
+    filter.improvementValueMin != null ||
+    filter.improvementValueMax != null ||
+    filter.taxableValueMin != null ||
+    filter.taxableValueMax != null ||
+    filter.homeOwnersExemptionMin != null ||
+    filter.homeOwnersExemptionMax != null ||
+    filter.realEstateExemptionMin != null ||
+    filter.realEstateExemptionMax != null ||
+    filter.fixtureValueMin != null ||
+    filter.fixtureValueMax != null ||
+    filter.fixtureExemptionMin != null ||
+    filter.fixtureExemptionMax != null ||
+    filter.personalPropertyValueMin != null ||
+    filter.personalPropertyValueMax != null ||
+    filter.personalPropertyExemptionMin != null ||
+    filter.personalPropertyExemptionMax != null ||
+    filter.totalExemptionMin != null ||
+    filter.totalExemptionMax != null
+  )
+}
+
+function boundaryMatchKeys(parcels: ParcelRecord[]): string[] {
+  return [...new Set(
+    parcels.flatMap(parcel => [parcel.ain, parcel.assessorId, parcel.assessorId?.replace(/[^0-9]/g, '')])
+      .filter(Boolean)
+      .map((value) => String(value))
+  )]
+}
+
+function requiresEnrichedCount(filter: ParcelFilterQuery): boolean {
+  return (
+    filter.buildingPermitCountMin != null ||
+    filter.buildingPermitCountMax != null ||
+    filter.electricalPermitCountMin != null ||
+    filter.electricalPermitCountMax != null ||
+    filter.submittedPermitCountMin != null ||
+    filter.submittedPermitCountMax != null ||
+    filter.inspectionCountMin != null ||
+    filter.inspectionCountMax != null
+  )
+}
+
+
 /* ═══════════════════════════════════════════════════════════
    FILTER BAR
    ═══════════════════════════════════════════════════════════ */
@@ -363,20 +460,191 @@ interface FilterBarProps {
   isDrawing: boolean
   resultCount: number
   queryTimeMs: number
+  minimized?: boolean
+  onToggleMinimized?: () => void
 }
 
-function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCount, queryTimeMs }: FilterBarProps) {
+function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCount, queryTimeMs, minimized = false, onToggleMinimized }: FilterBarProps) {
   const [localApn, setLocalApn] = useState(filter.apnPrefix ?? '')
   const [localSearch, setLocalSearch] = useState(filter.searchText ?? '')
   const [localValueMin, setLocalValueMin] = useState(filter.valueMin?.toString() ?? '')
   const [localValueMax, setLocalValueMax] = useState(filter.valueMax?.toString() ?? '')
+  const [localYearBuiltMin, setLocalYearBuiltMin] = useState(filter.yearBuiltMin?.toString() ?? '')
+  const [localYearBuiltMax, setLocalYearBuiltMax] = useState(filter.yearBuiltMax?.toString() ?? '')
+  const [localEffectiveYearMin, setLocalEffectiveYearMin] = useState(filter.effectiveYearMin?.toString() ?? '')
+  const [localEffectiveYearMax, setLocalEffectiveYearMax] = useState(filter.effectiveYearMax?.toString() ?? '')
+  const [localRollYearMin, setLocalRollYearMin] = useState(filter.rollYearMin?.toString() ?? '')
+  const [localRollYearMax, setLocalRollYearMax] = useState(filter.rollYearMax?.toString() ?? '')
+  const [localSqftMin, setLocalSqftMin] = useState(filter.sqftMin?.toString() ?? '')
+  const [localSqftMax, setLocalSqftMax] = useState(filter.sqftMax?.toString() ?? '')
+  const [localBedMin, setLocalBedMin] = useState(filter.bedMin?.toString() ?? '')
+  const [localBathMin, setLocalBathMin] = useState(filter.bathMin?.toString() ?? '')
+  const [localUnitMin, setLocalUnitMin] = useState(filter.unitMin?.toString() ?? '')
+  const [localBuildingMin, setLocalBuildingMin] = useState(filter.buildingCountMin?.toString() ?? '')
+  const [localBuildingPermitCountMin, setLocalBuildingPermitCountMin] = useState(filter.buildingPermitCountMin?.toString() ?? '')
+  const [localBuildingPermitCountMax, setLocalBuildingPermitCountMax] = useState(filter.buildingPermitCountMax?.toString() ?? '')
+  const [localElectricalPermitCountMin, setLocalElectricalPermitCountMin] = useState(filter.electricalPermitCountMin?.toString() ?? '')
+  const [localElectricalPermitCountMax, setLocalElectricalPermitCountMax] = useState(filter.electricalPermitCountMax?.toString() ?? '')
+  const [localSubmittedPermitCountMin, setLocalSubmittedPermitCountMin] = useState(filter.submittedPermitCountMin?.toString() ?? '')
+  const [localSubmittedPermitCountMax, setLocalSubmittedPermitCountMax] = useState(filter.submittedPermitCountMax?.toString() ?? '')
+  const [localInspectionCountMin, setLocalInspectionCountMin] = useState(filter.inspectionCountMin?.toString() ?? '')
+  const [localInspectionCountMax, setLocalInspectionCountMax] = useState(filter.inspectionCountMax?.toString() ?? '')
+  const [localStoriesMin, setLocalStoriesMin] = useState(filter.storiesMin?.toString() ?? '')
+  const [localStoriesMax, setLocalStoriesMax] = useState(filter.storiesMax?.toString() ?? '')
+  const [localLandBaseYearMin, setLocalLandBaseYearMin] = useState(filter.landBaseYearMin?.toString() ?? '')
+  const [localLandBaseYearMax, setLocalLandBaseYearMax] = useState(filter.landBaseYearMax?.toString() ?? '')
+  const [localImprovementBaseYearMin, setLocalImprovementBaseYearMin] = useState(filter.improvementBaseYearMin?.toString() ?? '')
+  const [localImprovementBaseYearMax, setLocalImprovementBaseYearMax] = useState(filter.improvementBaseYearMax?.toString() ?? '')
+  const [localLandValueMin, setLocalLandValueMin] = useState(filter.landValueMin?.toString() ?? '')
+  const [localLandValueMax, setLocalLandValueMax] = useState(filter.landValueMax?.toString() ?? '')
+  const [localImprovementValueMin, setLocalImprovementValueMin] = useState(filter.improvementValueMin?.toString() ?? '')
+  const [localImprovementValueMax, setLocalImprovementValueMax] = useState(filter.improvementValueMax?.toString() ?? '')
+  const [localTaxableValueMin, setLocalTaxableValueMin] = useState(filter.taxableValueMin?.toString() ?? '')
+  const [localTaxableValueMax, setLocalTaxableValueMax] = useState(filter.taxableValueMax?.toString() ?? '')
+  const [localHomeownersExemptionMin, setLocalHomeownersExemptionMin] = useState(filter.homeOwnersExemptionMin?.toString() ?? '')
+  const [localHomeownersExemptionMax, setLocalHomeownersExemptionMax] = useState(filter.homeOwnersExemptionMax?.toString() ?? '')
+  const [localRealEstateExemptionMin, setLocalRealEstateExemptionMin] = useState(filter.realEstateExemptionMin?.toString() ?? '')
+  const [localRealEstateExemptionMax, setLocalRealEstateExemptionMax] = useState(filter.realEstateExemptionMax?.toString() ?? '')
+  const [localFixtureValueMin, setLocalFixtureValueMin] = useState(filter.fixtureValueMin?.toString() ?? '')
+  const [localFixtureValueMax, setLocalFixtureValueMax] = useState(filter.fixtureValueMax?.toString() ?? '')
+  const [localFixtureExemptionMin, setLocalFixtureExemptionMin] = useState(filter.fixtureExemptionMin?.toString() ?? '')
+  const [localFixtureExemptionMax, setLocalFixtureExemptionMax] = useState(filter.fixtureExemptionMax?.toString() ?? '')
+  const [localPersonalPropertyValueMin, setLocalPersonalPropertyValueMin] = useState(filter.personalPropertyValueMin?.toString() ?? '')
+  const [localPersonalPropertyValueMax, setLocalPersonalPropertyValueMax] = useState(filter.personalPropertyValueMax?.toString() ?? '')
+  const [localPersonalPropertyExemptionMin, setLocalPersonalPropertyExemptionMin] = useState(filter.personalPropertyExemptionMin?.toString() ?? '')
+  const [localPersonalPropertyExemptionMax, setLocalPersonalPropertyExemptionMax] = useState(filter.personalPropertyExemptionMax?.toString() ?? '')
+  const [localTotalExemptionMin, setLocalTotalExemptionMin] = useState(filter.totalExemptionMin?.toString() ?? '')
+  const [localTotalExemptionMax, setLocalTotalExemptionMax] = useState(filter.totalExemptionMax?.toString() ?? '')
+  const [localClassification, setLocalClassification] = useState(filter.classification ?? '')
+  const [localRegionNumber, setLocalRegionNumber] = useState(filter.regionNumber ?? '')
+  const [localClusterCode, setLocalClusterCode] = useState(filter.clusterCode ?? '')
 
   const applyFilter = useCallback((patch: Partial<ParcelFilterQuery>) => {
     onFilterChange({ ...filter, ...patch })
   }, [filter, onFilterChange])
 
+  const parseNumericInput = (value: string): number | undefined => value ? Number(value) : undefined
+
+  useEffect(() => {
+    setLocalApn(filter.apnPrefix ?? '')
+    setLocalSearch(filter.searchText ?? '')
+    setLocalValueMin(filter.valueMin?.toString() ?? '')
+    setLocalValueMax(filter.valueMax?.toString() ?? '')
+    setLocalYearBuiltMin(filter.yearBuiltMin?.toString() ?? '')
+    setLocalYearBuiltMax(filter.yearBuiltMax?.toString() ?? '')
+    setLocalEffectiveYearMin(filter.effectiveYearMin?.toString() ?? '')
+    setLocalEffectiveYearMax(filter.effectiveYearMax?.toString() ?? '')
+    setLocalRollYearMin(filter.rollYearMin?.toString() ?? '')
+    setLocalRollYearMax(filter.rollYearMax?.toString() ?? '')
+    setLocalSqftMin(filter.sqftMin?.toString() ?? '')
+    setLocalSqftMax(filter.sqftMax?.toString() ?? '')
+    setLocalBedMin(filter.bedMin?.toString() ?? '')
+    setLocalBathMin(filter.bathMin?.toString() ?? '')
+    setLocalUnitMin(filter.unitMin?.toString() ?? '')
+    setLocalBuildingMin(filter.buildingCountMin?.toString() ?? '')
+    setLocalBuildingPermitCountMin(filter.buildingPermitCountMin?.toString() ?? '')
+    setLocalBuildingPermitCountMax(filter.buildingPermitCountMax?.toString() ?? '')
+    setLocalElectricalPermitCountMin(filter.electricalPermitCountMin?.toString() ?? '')
+    setLocalElectricalPermitCountMax(filter.electricalPermitCountMax?.toString() ?? '')
+    setLocalSubmittedPermitCountMin(filter.submittedPermitCountMin?.toString() ?? '')
+    setLocalSubmittedPermitCountMax(filter.submittedPermitCountMax?.toString() ?? '')
+    setLocalInspectionCountMin(filter.inspectionCountMin?.toString() ?? '')
+    setLocalInspectionCountMax(filter.inspectionCountMax?.toString() ?? '')
+    setLocalStoriesMin(filter.storiesMin?.toString() ?? '')
+    setLocalStoriesMax(filter.storiesMax?.toString() ?? '')
+    setLocalLandBaseYearMin(filter.landBaseYearMin?.toString() ?? '')
+    setLocalLandBaseYearMax(filter.landBaseYearMax?.toString() ?? '')
+    setLocalImprovementBaseYearMin(filter.improvementBaseYearMin?.toString() ?? '')
+    setLocalImprovementBaseYearMax(filter.improvementBaseYearMax?.toString() ?? '')
+    setLocalLandValueMin(filter.landValueMin?.toString() ?? '')
+    setLocalLandValueMax(filter.landValueMax?.toString() ?? '')
+    setLocalImprovementValueMin(filter.improvementValueMin?.toString() ?? '')
+    setLocalImprovementValueMax(filter.improvementValueMax?.toString() ?? '')
+    setLocalTaxableValueMin(filter.taxableValueMin?.toString() ?? '')
+    setLocalTaxableValueMax(filter.taxableValueMax?.toString() ?? '')
+    setLocalHomeownersExemptionMin(filter.homeOwnersExemptionMin?.toString() ?? '')
+    setLocalHomeownersExemptionMax(filter.homeOwnersExemptionMax?.toString() ?? '')
+    setLocalRealEstateExemptionMin(filter.realEstateExemptionMin?.toString() ?? '')
+    setLocalRealEstateExemptionMax(filter.realEstateExemptionMax?.toString() ?? '')
+    setLocalFixtureValueMin(filter.fixtureValueMin?.toString() ?? '')
+    setLocalFixtureValueMax(filter.fixtureValueMax?.toString() ?? '')
+    setLocalFixtureExemptionMin(filter.fixtureExemptionMin?.toString() ?? '')
+    setLocalFixtureExemptionMax(filter.fixtureExemptionMax?.toString() ?? '')
+    setLocalPersonalPropertyValueMin(filter.personalPropertyValueMin?.toString() ?? '')
+    setLocalPersonalPropertyValueMax(filter.personalPropertyValueMax?.toString() ?? '')
+    setLocalPersonalPropertyExemptionMin(filter.personalPropertyExemptionMin?.toString() ?? '')
+    setLocalPersonalPropertyExemptionMax(filter.personalPropertyExemptionMax?.toString() ?? '')
+    setLocalTotalExemptionMin(filter.totalExemptionMin?.toString() ?? '')
+    setLocalTotalExemptionMax(filter.totalExemptionMax?.toString() ?? '')
+    setLocalClassification(filter.classification ?? '')
+    setLocalRegionNumber(filter.regionNumber ?? '')
+    setLocalClusterCode(filter.clusterCode ?? '')
+  }, [
+    filter.apnPrefix,
+    filter.searchText,
+    filter.valueMin,
+    filter.valueMax,
+    filter.yearBuiltMin,
+    filter.yearBuiltMax,
+    filter.effectiveYearMin,
+    filter.effectiveYearMax,
+    filter.rollYearMin,
+    filter.rollYearMax,
+    filter.sqftMin,
+    filter.sqftMax,
+    filter.bedMin,
+    filter.bathMin,
+    filter.unitMin,
+    filter.buildingCountMin,
+    filter.buildingPermitCountMin,
+    filter.buildingPermitCountMax,
+    filter.electricalPermitCountMin,
+    filter.electricalPermitCountMax,
+    filter.submittedPermitCountMin,
+    filter.submittedPermitCountMax,
+    filter.inspectionCountMin,
+    filter.inspectionCountMax,
+    filter.storiesMin,
+    filter.storiesMax,
+    filter.landBaseYearMin,
+    filter.landBaseYearMax,
+    filter.improvementBaseYearMin,
+    filter.improvementBaseYearMax,
+    filter.landValueMin,
+    filter.landValueMax,
+    filter.improvementValueMin,
+    filter.improvementValueMax,
+    filter.taxableValueMin,
+    filter.taxableValueMax,
+    filter.homeOwnersExemptionMin,
+    filter.homeOwnersExemptionMax,
+    filter.realEstateExemptionMin,
+    filter.realEstateExemptionMax,
+    filter.fixtureValueMin,
+    filter.fixtureValueMax,
+    filter.fixtureExemptionMin,
+    filter.fixtureExemptionMax,
+    filter.personalPropertyValueMin,
+    filter.personalPropertyValueMax,
+    filter.personalPropertyExemptionMin,
+    filter.personalPropertyExemptionMax,
+    filter.totalExemptionMin,
+    filter.totalExemptionMax,
+    filter.classification,
+    filter.regionNumber,
+    filter.clusterCode
+  ])
+
   return (
-    <div className="pe-filter-bar">
+    <div className={`pe-filter-bar ${minimized ? 'minimized' : ''}`}>
+      <div className="pe-panel-head">
+        <div className="pe-panel-title">FILTERS</div>
+        <button className="pe-panel-min-btn" onClick={onToggleMinimized} title={minimized ? 'Expand filters' : 'Minimize filters'}>
+          {minimized ? '+' : '–'}
+        </button>
+      </div>
+      {minimized ? null : (
+        <div className="pe-filter-scroll">
       <div className="pe-filter-section">
         {/* APN Prefix */}
         <div className="pe-filter-group">
@@ -440,6 +708,19 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
           </button>
         </div>
 
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">BUILT</label>
+          <select
+            className="pe-filter-select"
+            value={filter.builtState ?? 'all'}
+            onChange={e => applyFilter({ builtState: (e.target.value as ParcelFilterQuery['builtState']) ?? 'all' })}
+          >
+            <option value="all">All</option>
+            <option value="built">Built</option>
+            <option value="unbuilt">Unbuilt</option>
+          </select>
+        </div>
+
         {/* Use Type */}
         <div className="pe-filter-group">
           <label className="pe-filter-label">USE TYPE</label>
@@ -458,6 +739,150 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
           </select>
         </div>
 
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">YEAR MIN</label>
+          <input
+            className="pe-filter-input small"
+            placeholder="1900"
+            value={localYearBuiltMin}
+            onChange={e => setLocalYearBuiltMin(e.target.value.replace(/[^0-9]/g, ''))}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ yearBuiltMin: parseNumericInput(localYearBuiltMin) })}
+            onBlur={() => applyFilter({ yearBuiltMin: parseNumericInput(localYearBuiltMin) })}
+          />
+        </div>
+
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">YEAR MAX</label>
+          <input
+            className="pe-filter-input small"
+            placeholder="2026"
+            value={localYearBuiltMax}
+            onChange={e => setLocalYearBuiltMax(e.target.value.replace(/[^0-9]/g, ''))}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ yearBuiltMax: parseNumericInput(localYearBuiltMax) })}
+            onBlur={() => applyFilter({ yearBuiltMax: parseNumericInput(localYearBuiltMax) })}
+          />
+        </div>
+
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">EFFECTIVE MIN</label>
+          <input
+            className="pe-filter-input small"
+            placeholder="1900"
+            value={localEffectiveYearMin}
+            onChange={e => setLocalEffectiveYearMin(e.target.value.replace(/[^0-9]/g, ''))}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ effectiveYearMin: parseNumericInput(localEffectiveYearMin) })}
+            onBlur={() => applyFilter({ effectiveYearMin: parseNumericInput(localEffectiveYearMin) })}
+          />
+        </div>
+
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">EFFECTIVE MAX</label>
+          <input
+            className="pe-filter-input small"
+            placeholder="2026"
+            value={localEffectiveYearMax}
+            onChange={e => setLocalEffectiveYearMax(e.target.value.replace(/[^0-9]/g, ''))}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ effectiveYearMax: parseNumericInput(localEffectiveYearMax) })}
+            onBlur={() => applyFilter({ effectiveYearMax: parseNumericInput(localEffectiveYearMax) })}
+          />
+        </div>
+
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">ROLL YEAR MIN</label>
+          <input
+            className="pe-filter-input small"
+            placeholder="2020"
+            value={localRollYearMin}
+            onChange={e => setLocalRollYearMin(e.target.value.replace(/[^0-9]/g, ''))}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ rollYearMin: parseNumericInput(localRollYearMin) })}
+            onBlur={() => applyFilter({ rollYearMin: parseNumericInput(localRollYearMin) })}
+          />
+        </div>
+
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">ROLL YEAR MAX</label>
+          <input
+            className="pe-filter-input small"
+            placeholder="2026"
+            value={localRollYearMax}
+            onChange={e => setLocalRollYearMax(e.target.value.replace(/[^0-9]/g, ''))}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ rollYearMax: parseNumericInput(localRollYearMax) })}
+            onBlur={() => applyFilter({ rollYearMax: parseNumericInput(localRollYearMax) })}
+          />
+        </div>
+
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">SQFT MIN</label>
+          <input
+            className="pe-filter-input small"
+            placeholder="1000"
+            value={localSqftMin}
+            onChange={e => setLocalSqftMin(e.target.value.replace(/[^0-9]/g, ''))}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ sqftMin: parseNumericInput(localSqftMin) })}
+            onBlur={() => applyFilter({ sqftMin: parseNumericInput(localSqftMin) })}
+          />
+        </div>
+
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">SQFT MAX</label>
+          <input
+            className="pe-filter-input small"
+            placeholder="10000"
+            value={localSqftMax}
+            onChange={e => setLocalSqftMax(e.target.value.replace(/[^0-9]/g, ''))}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ sqftMax: parseNumericInput(localSqftMax) })}
+            onBlur={() => applyFilter({ sqftMax: parseNumericInput(localSqftMax) })}
+          />
+        </div>
+
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">BEDS ≥</label>
+          <input
+            className="pe-filter-input tiny"
+            placeholder="3"
+            value={localBedMin}
+            onChange={e => setLocalBedMin(e.target.value.replace(/[^0-9]/g, ''))}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ bedMin: parseNumericInput(localBedMin) })}
+            onBlur={() => applyFilter({ bedMin: parseNumericInput(localBedMin) })}
+          />
+        </div>
+
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">BATHS ≥</label>
+          <input
+            className="pe-filter-input tiny"
+            placeholder="2"
+            value={localBathMin}
+            onChange={e => setLocalBathMin(e.target.value.replace(/[^0-9.]/g, ''))}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ bathMin: parseNumericInput(localBathMin) })}
+            onBlur={() => applyFilter({ bathMin: parseNumericInput(localBathMin) })}
+          />
+        </div>
+
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">UNITS ≥</label>
+          <input
+            className="pe-filter-input tiny"
+            placeholder="1"
+            value={localUnitMin}
+            onChange={e => setLocalUnitMin(e.target.value.replace(/[^0-9]/g, ''))}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ unitMin: parseNumericInput(localUnitMin) })}
+            onBlur={() => applyFilter({ unitMin: parseNumericInput(localUnitMin) })}
+          />
+        </div>
+
+        <div className="pe-filter-group">
+          <label className="pe-filter-label">BLDGS ≥</label>
+          <input
+            className="pe-filter-input tiny"
+            placeholder="1"
+            value={localBuildingMin}
+            onChange={e => setLocalBuildingMin(e.target.value.replace(/[^0-9]/g, ''))}
+            onKeyDown={e => e.key === 'Enter' && applyFilter({ buildingCountMin: parseNumericInput(localBuildingMin) })}
+            onBlur={() => applyFilter({ buildingCountMin: parseNumericInput(localBuildingMin) })}
+          />
+        </div>
+
         {/* Sort */}
         <div className="pe-filter-group">
           <label className="pe-filter-label">SORT BY</label>
@@ -470,8 +895,28 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
             <option value="totalValue">Total Value</option>
             <option value="squareFootage">SQFT</option>
             <option value="yearBuilt">Year Built</option>
+            <option value="effectiveYear">Effective Year</option>
+            <option value="rollYear">Roll Year</option>
+            <option value="bedrooms">Bedrooms</option>
+            <option value="bathrooms">Bathrooms</option>
+            <option value="units">Units</option>
+            <option value="buildingCount">Buildings</option>
+            <option value="stories">Stories</option>
             <option value="taxableValue">Taxable</option>
             <option value="landValue">Land Value</option>
+            <option value="improvementValue">Improvement Value</option>
+            <option value="landBaseYear">Land Base Year</option>
+            <option value="improvementBaseYear">Improvement Base Year</option>
+            <option value="homeOwnersExemption">Homeowner Exemption</option>
+            <option value="realEstateExemption">Real Estate Exemption</option>
+            <option value="fixtureValue">Fixture Value</option>
+            <option value="fixtureExemption">Fixture Exemption</option>
+            <option value="personalPropertyValue">Personal Property Value</option>
+            <option value="personalPropertyExemption">Personal Property Exemption</option>
+            <option value="totalExemption">Total Exemption</option>
+            <option value="classification">Classification</option>
+            <option value="regionNumber">Region</option>
+            <option value="clusterCode">Cluster</option>
           </select>
           <button
             className="pe-filter-sort-dir"
@@ -505,19 +950,226 @@ function FilterBar({ filter, onFilterChange, onDrawBoundary, isDrawing, resultCo
         {filter.hasCofO && (
           <span className="pe-pill cofo">C-of-O Only <button onClick={() => applyFilter({ hasCofO: false })}>×</button></span>
         )}
+        {filter.builtState && filter.builtState !== 'all' && (
+          <span className="pe-pill">{filter.builtState === 'built' ? 'Built' : 'Unbuilt'} <button onClick={() => applyFilter({ builtState: 'all' })}>×</button></span>
+        )}
         {filter.useType && (
           <span className="pe-pill">{filter.useType} <button onClick={() => applyFilter({ useType: undefined })}>×</button></span>
+        )}
+        {filter.yearBuiltMin != null && (
+          <span className="pe-pill">Year ≥ {filter.yearBuiltMin} <button onClick={() => { setLocalYearBuiltMin(''); applyFilter({ yearBuiltMin: undefined }) }}>×</button></span>
+        )}
+        {filter.yearBuiltMax != null && (
+          <span className="pe-pill">Year ≤ {filter.yearBuiltMax} <button onClick={() => { setLocalYearBuiltMax(''); applyFilter({ yearBuiltMax: undefined }) }}>×</button></span>
+        )}
+        {filter.effectiveYearMin != null && (
+          <span className="pe-pill">Effective ≥ {filter.effectiveYearMin} <button onClick={() => { setLocalEffectiveYearMin(''); applyFilter({ effectiveYearMin: undefined }) }}>×</button></span>
+        )}
+        {filter.effectiveYearMax != null && (
+          <span className="pe-pill">Effective ≤ {filter.effectiveYearMax} <button onClick={() => { setLocalEffectiveYearMax(''); applyFilter({ effectiveYearMax: undefined }) }}>×</button></span>
+        )}
+        {filter.rollYearMin != null && (
+          <span className="pe-pill">Roll ≥ {filter.rollYearMin} <button onClick={() => { setLocalRollYearMin(''); applyFilter({ rollYearMin: undefined }) }}>×</button></span>
+        )}
+        {filter.rollYearMax != null && (
+          <span className="pe-pill">Roll ≤ {filter.rollYearMax} <button onClick={() => { setLocalRollYearMax(''); applyFilter({ rollYearMax: undefined }) }}>×</button></span>
+        )}
+        {filter.sqftMin != null && (
+          <span className="pe-pill">SQFT ≥ {formatNumber(filter.sqftMin)} <button onClick={() => { setLocalSqftMin(''); applyFilter({ sqftMin: undefined }) }}>×</button></span>
+        )}
+        {filter.sqftMax != null && (
+          <span className="pe-pill">SQFT ≤ {formatNumber(filter.sqftMax)} <button onClick={() => { setLocalSqftMax(''); applyFilter({ sqftMax: undefined }) }}>×</button></span>
+        )}
+        {filter.bedMin != null && (
+          <span className="pe-pill">Beds ≥ {filter.bedMin} <button onClick={() => { setLocalBedMin(''); applyFilter({ bedMin: undefined }) }}>×</button></span>
+        )}
+        {filter.bathMin != null && (
+          <span className="pe-pill">Baths ≥ {filter.bathMin} <button onClick={() => { setLocalBathMin(''); applyFilter({ bathMin: undefined }) }}>×</button></span>
+        )}
+        {filter.unitMin != null && (
+          <span className="pe-pill">Units ≥ {filter.unitMin} <button onClick={() => { setLocalUnitMin(''); applyFilter({ unitMin: undefined }) }}>×</button></span>
+        )}
+        {filter.buildingCountMin != null && (
+          <span className="pe-pill">Buildings ≥ {filter.buildingCountMin} <button onClick={() => { setLocalBuildingMin(''); applyFilter({ buildingCountMin: undefined }) }}>×</button></span>
         )}
         {filter.searchText && (
           <span className="pe-pill">"{filter.searchText}" <button onClick={() => { setLocalSearch(''); applyFilter({ searchText: undefined }) }}>×</button></span>
         )}
-        {filter.bounds && (
-          <span className="pe-pill boundary">Boundary Active <button onClick={() => applyFilter({ bounds: undefined })}>×</button></span>
-        )}
         <span className="pe-filter-result-count">
-          {resultCount.toLocaleString()} matched records · {queryTimeMs}ms
+          {resultCount.toLocaleString()} viewport matches · {queryTimeMs}ms
         </span>
       </div>
+      <div className="pe-filter-advanced">
+        <div className="pe-filter-advanced-title">FULL FILTERS</div>
+        <div className="pe-filter-advanced-grid">
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">BUILDING YEAR MIN</label>
+            <input className="pe-filter-input small" value={localYearBuiltMin} placeholder="1900" onChange={e => setLocalYearBuiltMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ yearBuiltMin: parseNumericInput(localYearBuiltMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">BUILDING YEAR MAX</label>
+            <input className="pe-filter-input small" value={localYearBuiltMax} placeholder="2026" onChange={e => setLocalYearBuiltMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ yearBuiltMax: parseNumericInput(localYearBuiltMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">STORIES MIN</label>
+            <input className="pe-filter-input small" value={localStoriesMin} placeholder="1" onChange={e => setLocalStoriesMin(e.target.value.replace(/[^0-9.]/g, ''))} onBlur={() => applyFilter({ storiesMin: parseNumericInput(localStoriesMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">STORIES MAX</label>
+            <input className="pe-filter-input small" value={localStoriesMax} placeholder="4" onChange={e => setLocalStoriesMax(e.target.value.replace(/[^0-9.]/g, ''))} onBlur={() => applyFilter({ storiesMax: parseNumericInput(localStoriesMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">LAND BASE MIN</label>
+            <input className="pe-filter-input small" value={localLandBaseYearMin} placeholder="1900" onChange={e => setLocalLandBaseYearMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ landBaseYearMin: parseNumericInput(localLandBaseYearMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">LAND BASE MAX</label>
+            <input className="pe-filter-input small" value={localLandBaseYearMax} placeholder="2026" onChange={e => setLocalLandBaseYearMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ landBaseYearMax: parseNumericInput(localLandBaseYearMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">IMPR BASE MIN</label>
+            <input className="pe-filter-input small" value={localImprovementBaseYearMin} placeholder="1900" onChange={e => setLocalImprovementBaseYearMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ improvementBaseYearMin: parseNumericInput(localImprovementBaseYearMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">IMPR BASE MAX</label>
+            <input className="pe-filter-input small" value={localImprovementBaseYearMax} placeholder="2026" onChange={e => setLocalImprovementBaseYearMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ improvementBaseYearMax: parseNumericInput(localImprovementBaseYearMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">TAXABLE MIN</label>
+            <input className="pe-filter-input small" value={localTaxableValueMin} placeholder="0" onChange={e => setLocalTaxableValueMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ taxableValueMin: parseNumericInput(localTaxableValueMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">TAXABLE MAX</label>
+            <input className="pe-filter-input small" value={localTaxableValueMax} placeholder="∞" onChange={e => setLocalTaxableValueMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ taxableValueMax: parseNumericInput(localTaxableValueMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">LAND VALUE MIN</label>
+            <input className="pe-filter-input small" value={localLandValueMin} placeholder="0" onChange={e => setLocalLandValueMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ landValueMin: parseNumericInput(localLandValueMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">LAND VALUE MAX</label>
+            <input className="pe-filter-input small" value={localLandValueMax} placeholder="∞" onChange={e => setLocalLandValueMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ landValueMax: parseNumericInput(localLandValueMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">IMPR VALUE MIN</label>
+            <input className="pe-filter-input small" value={localImprovementValueMin} placeholder="0" onChange={e => setLocalImprovementValueMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ improvementValueMin: parseNumericInput(localImprovementValueMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">IMPR VALUE MAX</label>
+            <input className="pe-filter-input small" value={localImprovementValueMax} placeholder="∞" onChange={e => setLocalImprovementValueMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ improvementValueMax: parseNumericInput(localImprovementValueMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">HOMEOWNR EX MIN</label>
+            <input className="pe-filter-input small" value={localHomeownersExemptionMin} placeholder="0" onChange={e => setLocalHomeownersExemptionMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ homeOwnersExemptionMin: parseNumericInput(localHomeownersExemptionMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">HOMEOWNR EX MAX</label>
+            <input className="pe-filter-input small" value={localHomeownersExemptionMax} placeholder="∞" onChange={e => setLocalHomeownersExemptionMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ homeOwnersExemptionMax: parseNumericInput(localHomeownersExemptionMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">R.E. EX MIN</label>
+            <input className="pe-filter-input small" value={localRealEstateExemptionMin} placeholder="0" onChange={e => setLocalRealEstateExemptionMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ realEstateExemptionMin: parseNumericInput(localRealEstateExemptionMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">R.E. EX MAX</label>
+            <input className="pe-filter-input small" value={localRealEstateExemptionMax} placeholder="∞" onChange={e => setLocalRealEstateExemptionMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ realEstateExemptionMax: parseNumericInput(localRealEstateExemptionMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">FIXTURE VALUE MIN</label>
+            <input className="pe-filter-input small" value={localFixtureValueMin} placeholder="0" onChange={e => setLocalFixtureValueMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ fixtureValueMin: parseNumericInput(localFixtureValueMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">FIXTURE VALUE MAX</label>
+            <input className="pe-filter-input small" value={localFixtureValueMax} placeholder="∞" onChange={e => setLocalFixtureValueMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ fixtureValueMax: parseNumericInput(localFixtureValueMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">FIXTURE EX MIN</label>
+            <input className="pe-filter-input small" value={localFixtureExemptionMin} placeholder="0" onChange={e => setLocalFixtureExemptionMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ fixtureExemptionMin: parseNumericInput(localFixtureExemptionMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">FIXTURE EX MAX</label>
+            <input className="pe-filter-input small" value={localFixtureExemptionMax} placeholder="∞" onChange={e => setLocalFixtureExemptionMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ fixtureExemptionMax: parseNumericInput(localFixtureExemptionMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">PERS PROP MIN</label>
+            <input className="pe-filter-input small" value={localPersonalPropertyValueMin} placeholder="0" onChange={e => setLocalPersonalPropertyValueMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ personalPropertyValueMin: parseNumericInput(localPersonalPropertyValueMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">PERS PROP MAX</label>
+            <input className="pe-filter-input small" value={localPersonalPropertyValueMax} placeholder="∞" onChange={e => setLocalPersonalPropertyValueMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ personalPropertyValueMax: parseNumericInput(localPersonalPropertyValueMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">PERS EX MIN</label>
+            <input className="pe-filter-input small" value={localPersonalPropertyExemptionMin} placeholder="0" onChange={e => setLocalPersonalPropertyExemptionMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ personalPropertyExemptionMin: parseNumericInput(localPersonalPropertyExemptionMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">PERS EX MAX</label>
+            <input className="pe-filter-input small" value={localPersonalPropertyExemptionMax} placeholder="∞" onChange={e => setLocalPersonalPropertyExemptionMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ personalPropertyExemptionMax: parseNumericInput(localPersonalPropertyExemptionMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">TOTAL EX MIN</label>
+            <input className="pe-filter-input small" value={localTotalExemptionMin} placeholder="0" onChange={e => setLocalTotalExemptionMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ totalExemptionMin: parseNumericInput(localTotalExemptionMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">TOTAL EX MAX</label>
+            <input className="pe-filter-input small" value={localTotalExemptionMax} placeholder="∞" onChange={e => setLocalTotalExemptionMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ totalExemptionMax: parseNumericInput(localTotalExemptionMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">BLDG PERMITS ≥</label>
+            <input className="pe-filter-input small" value={localBuildingPermitCountMin} placeholder="2" onChange={e => setLocalBuildingPermitCountMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ buildingPermitCountMin: parseNumericInput(localBuildingPermitCountMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">BLDG PERMITS ≤</label>
+            <input className="pe-filter-input small" value={localBuildingPermitCountMax} placeholder="25" onChange={e => setLocalBuildingPermitCountMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ buildingPermitCountMax: parseNumericInput(localBuildingPermitCountMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">ELEC PERMITS ≥</label>
+            <input className="pe-filter-input small" value={localElectricalPermitCountMin} placeholder="1" onChange={e => setLocalElectricalPermitCountMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ electricalPermitCountMin: parseNumericInput(localElectricalPermitCountMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">ELEC PERMITS ≤</label>
+            <input className="pe-filter-input small" value={localElectricalPermitCountMax} placeholder="25" onChange={e => setLocalElectricalPermitCountMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ electricalPermitCountMax: parseNumericInput(localElectricalPermitCountMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">SUBMITTED ≥</label>
+            <input className="pe-filter-input small" value={localSubmittedPermitCountMin} placeholder="1" onChange={e => setLocalSubmittedPermitCountMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ submittedPermitCountMin: parseNumericInput(localSubmittedPermitCountMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">SUBMITTED ≤</label>
+            <input className="pe-filter-input small" value={localSubmittedPermitCountMax} placeholder="25" onChange={e => setLocalSubmittedPermitCountMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ submittedPermitCountMax: parseNumericInput(localSubmittedPermitCountMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">INSPECTIONS ≥</label>
+            <input className="pe-filter-input small" value={localInspectionCountMin} placeholder="1" onChange={e => setLocalInspectionCountMin(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ inspectionCountMin: parseNumericInput(localInspectionCountMin) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">INSPECTIONS ≤</label>
+            <input className="pe-filter-input small" value={localInspectionCountMax} placeholder="25" onChange={e => setLocalInspectionCountMax(e.target.value.replace(/[^0-9]/g, ''))} onBlur={() => applyFilter({ inspectionCountMax: parseNumericInput(localInspectionCountMax) })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">TAXABLE?</label>
+            <select className="pe-filter-select" value={filter.propertyTaxable ?? ''} onChange={e => applyFilter({ propertyTaxable: e.target.value || undefined })}>
+              <option value="">All</option>
+              <option value="Y">Yes</option>
+              <option value="N">No</option>
+            </select>
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">CLASSIFICATION</label>
+            <input className="pe-filter-input small" value={localClassification} placeholder="R" onChange={e => setLocalClassification(e.target.value)} onBlur={() => applyFilter({ classification: localClassification || undefined })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">REGION</label>
+            <input className="pe-filter-input small" value={localRegionNumber} placeholder="01" onChange={e => setLocalRegionNumber(e.target.value)} onBlur={() => applyFilter({ regionNumber: localRegionNumber || undefined })} />
+          </div>
+          <div className="pe-filter-group">
+            <label className="pe-filter-label">CLUSTER</label>
+            <input className="pe-filter-input small" value={localClusterCode} placeholder="A1" onChange={e => setLocalClusterCode(e.target.value)} onBlur={() => applyFilter({ clusterCode: localClusterCode || undefined })} />
+          </div>
+        </div>
+      </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -549,6 +1201,8 @@ interface DatasetLegendProps {
   inspectionCount: number
   datasetTotals: Record<string, number>
   manifestSteps: DataLoadStep[]
+  minimized?: boolean
+  onToggleMinimized?: () => void
 }
 
 interface FactSourceManifestProps {
@@ -577,7 +1231,9 @@ function DatasetLegend({
   submittedPermitCount,
   inspectionCount,
   datasetTotals,
-  manifestSteps
+  manifestSteps,
+  minimized = false,
+  onToggleMinimized
 }: DatasetLegendProps) {
   const sampled = (count: number, totalKey: string, fallbackKey?: string) => {
     const total = datasetTotals[totalKey] ?? (fallbackKey ? datasetTotals[fallbackKey] : 0) ?? 0
@@ -616,8 +1272,15 @@ function DatasetLegend({
   }
 
   return (
-    <div className="pe-legend">
-      <div className="pe-legend-title">DATASETS</div>
+    <div className={`pe-legend ${minimized ? 'minimized' : ''}`}>
+      <div className="pe-panel-head">
+        <div className="pe-legend-title">DATASETS</div>
+        <button className="pe-panel-min-btn" onClick={onToggleMinimized} title={minimized ? 'Expand datasets' : 'Minimize datasets'}>
+          {minimized ? '+' : '–'}
+        </button>
+      </div>
+      {minimized ? null : (
+        <>
       {manifestSteps.map((step) => {
         const info = rowForDataset(step.datasetName)
         return (
@@ -639,6 +1302,8 @@ function DatasetLegend({
         <span>Cross-Referenced</span>
         <span className="pe-legend-count">{bothCount}</span>
       </div>
+        </>
+      )}
     </div>
   )
 }
@@ -957,15 +1622,24 @@ function ParcelCard({
 function DossierPanel({
   parcel,
   onSelectOwner,
-  dossierProvenance
+  dossierProvenance,
+  collapsed,
+  onToggleCollapsed
 }: {
   parcel: ParcelRecord | null
   onSelectOwner: (ownerName: string) => void
   dossierProvenance: ParcelDossierProvenance | null
+  collapsed: boolean
+  onToggleCollapsed: () => void
 }) {
+  if (collapsed) return null
   if (!parcel) {
     return (
       <aside className="pe-dossier">
+        <div className="pe-dossier-shell-head">
+          <div className="pe-panel-title">DOSSIER</div>
+          <button className="pe-panel-min-btn" onClick={onToggleCollapsed}>–</button>
+        </div>
         <div className="pe-dossier-empty">
           <div className="pe-dossier-empty-icon">⌘</div>
           <h3>Parcel Dossier</h3>
@@ -990,6 +1664,10 @@ function DossierPanel({
 
   return (
     <aside className="pe-dossier">
+      <div className="pe-dossier-shell-head">
+        <div className="pe-panel-title">DOSSIER</div>
+        <button className="pe-panel-min-btn" onClick={onToggleCollapsed}>–</button>
+      </div>
       <div className="pe-dossier-content" key={parcel.assessorId}>
         {/* Header */}
         <div className="pe-dossier-header">
@@ -1254,6 +1932,10 @@ interface MapViewProps {
   heatCells: HeatMapCell[]
   selectedParcelIds: Set<string>
   showPolygons: boolean
+  filterMode: boolean
+  filteredViewportCount: number
+  loadingRecords: boolean
+  activeParcelKey: string | null
   visualSettings: VisualSettings
   selectedParcel: ParcelRecord | null
   terrainMetrics: TerrainMetrics | null
@@ -1277,6 +1959,10 @@ function MapView({
   heatCells,
   selectedParcelIds,
   showPolygons,
+  filterMode,
+  filteredViewportCount,
+  loadingRecords,
+  activeParcelKey,
   visualSettings,
   selectedParcel,
   terrainMetrics,
@@ -1303,6 +1989,7 @@ function MapView({
   const lastHoverAinRef = useRef<string | null>(null)
   const lastSelectedAinsRef = useRef<Set<string>>(new Set())
   const lastOwnerAinsRef = useRef<Set<string>>(new Set())
+  const matchKeys = useMemo(() => boundaryMatchKeys(parcels), [parcels])
   const [hoveredParcelKey, setHoveredParcelKey] = useState<string | null>(null)
   const [hoverTooltip, setHoverTooltip] = useState<{ x: number; y: number; label: string; sublabel: string } | null>(null)
   const [drawBox, setDrawBox] = useState<{ x: number; y: number; width: number; height: number } | null>(null)
@@ -1425,7 +2112,6 @@ function MapView({
               type: 'fill',
               source: PMTILES_VECTOR_SOURCE_ID,
               'source-layer': sourceLayer,
-              minzoom: PARCEL_BOUNDARY_RENDER_MIN_ZOOM,
               paint: {
                 'fill-color': [
                   'case',
@@ -1451,7 +2137,6 @@ function MapView({
               type: 'line',
               source: PMTILES_VECTOR_SOURCE_ID,
               'source-layer': sourceLayer,
-              minzoom: PARCEL_BOUNDARY_RENDER_MIN_ZOOM,
               paint: {
                 'line-color': [
                   'case',
@@ -1790,12 +2475,62 @@ function MapView({
     if (!map) return
     let pollTimer: number | null = null
     let lastCountTs = 0
-    let lastSeenSize = 0
+    const keyExpr: any = ['to-string', ['coalesce', ['get', 'AIN'], ['get', 'APN'], '']]
+
+    const lineOpacityExpression: any = filterMode
+      ? (loadingRecords
+          ? [
+              'case',
+              ['boolean', ['feature-state', 'selected'], false], 1,
+              ['boolean', ['feature-state', 'hover'], false], 1,
+              ['boolean', ['feature-state', 'owner'], false], 0.95,
+              0.18
+            ]
+          : [
+              'case',
+              ['boolean', ['feature-state', 'selected'], false], 1,
+              ['boolean', ['feature-state', 'hover'], false], 1,
+              ['boolean', ['feature-state', 'owner'], false], 0.95,
+              ['match', keyExpr, ['literal', matchKeys], 1, 0.18]
+            ])
+      : 1
+
+    const fillOpacityExpression: any = filterMode
+      ? (loadingRecords
+          ? [
+              'case',
+              ['boolean', ['feature-state', 'selected'], false], 0.18,
+              ['boolean', ['feature-state', 'hover'], false], 0.14,
+              ['boolean', ['feature-state', 'owner'], false], 0.1,
+              0.015
+            ]
+          : [
+              'case',
+              ['boolean', ['feature-state', 'selected'], false], 0.18,
+              ['boolean', ['feature-state', 'hover'], false], 0.14,
+              ['boolean', ['feature-state', 'owner'], false], 0.1,
+              ['match', keyExpr, ['literal', matchKeys], visualSettings.showPolygonFill ? 0.05 : 0.02, 0.01]
+            ])
+      : [
+          'case',
+          ['boolean', ['feature-state', 'selected'], false], 0.18,
+          ['boolean', ['feature-state', 'hover'], false], 0.14,
+          ['boolean', ['feature-state', 'owner'], false], 0.1,
+          visualSettings.showPolygonFill ? 0.04 : 0
+        ]
 
     const applyVisibility = () => {
-      const visibility = showPolygons ? 'visible' : 'none'
-      if (map.getLayer(PMTILES_LINE_LAYER_ID)) map.setLayoutProperty(PMTILES_LINE_LAYER_ID, 'visibility', visibility)
-      if (map.getLayer(PMTILES_FILL_LAYER_ID)) map.setLayoutProperty(PMTILES_FILL_LAYER_ID, 'visibility', visibility)
+      if (map.getLayer(PMTILES_LINE_LAYER_ID)) {
+        map.setFilter(PMTILES_LINE_LAYER_ID, null as any)
+        map.setLayoutProperty(PMTILES_LINE_LAYER_ID, 'visibility', showPolygons ? 'visible' : 'none')
+        map.setPaintProperty(PMTILES_LINE_LAYER_ID, 'line-opacity', lineOpacityExpression)
+        map.setPaintProperty(PMTILES_LINE_LAYER_ID, 'line-dasharray', filterMode && loadingRecords ? [0.5, 2] : [1, 0])
+      }
+      if (map.getLayer(PMTILES_FILL_LAYER_ID)) {
+        map.setFilter(PMTILES_FILL_LAYER_ID, null as any)
+        map.setLayoutProperty(PMTILES_FILL_LAYER_ID, 'visibility', showPolygons ? 'visible' : 'none')
+        map.setPaintProperty(PMTILES_FILL_LAYER_ID, 'fill-opacity', fillOpacityExpression)
+      }
     }
 
     const updateCounts = () => {
@@ -1806,15 +2541,12 @@ function MapView({
         onBoundaryStats(0, 0, true, false)
         return
       }
-      if (map.getZoom() < PARCEL_BOUNDARY_RENDER_MIN_ZOOM) {
-        onBoundaryStats(0, 0, true, true)
-        return
-      }
-      if (!map.getLayer(PMTILES_LINE_LAYER_ID)) {
+      const queryLayer = PMTILES_LINE_LAYER_ID
+      if (!map.getLayer(queryLayer)) {
         onBoundaryStats(0, 0, true, false)
         return
       }
-      const features = map.queryRenderedFeatures(undefined, { layers: [PMTILES_LINE_LAYER_ID] } as any)
+      const features = map.queryRenderedFeatures(undefined, { layers: [queryLayer] } as any)
       const seen = new Set<string>()
       for (let idx = 0; idx < features.length; idx++) {
         const feature = features[idx]
@@ -1827,7 +2559,6 @@ function MapView({
         const key = ain || apn || fid || objectId || String(idx)
         seen.add(key)
       }
-      lastSeenSize = seen.size
       onBoundaryStats(seen.size, seen.size, true, false)
     }
 
@@ -1840,36 +2571,32 @@ function MapView({
         window.clearTimeout(pollTimer)
         pollTimer = null
       }
-      updateCounts()
     }
     const onMoveEnd = () => {
       if (!showPolygons) return
       onBoundaryRefreshStateChange?.('settling')
-      updateCounts()
       if (pollTimer != null) window.clearTimeout(pollTimer)
       pollTimer = window.setTimeout(() => {
         updateCounts()
         onBoundaryRefreshStateChange?.('idle')
-      }, 180)
+      }, 320)
     }
-    const onSourceData = (e: any) => {
-      if (!e?.sourceId || e.sourceId !== PMTILES_VECTOR_SOURCE_ID) return
+    const onIdle = () => {
+      if (!showPolygons) return
       updateCounts()
     }
     map.on('movestart', onMoveStart)
-    map.on('move', updateCounts)
     map.on('moveend', onMoveEnd)
-    map.on('sourcedata', onSourceData)
+    map.on('idle', onIdle)
     // Initial bring-up: trigger a real count pass so boundary tiles begin requesting.
     updateCounts()
     return () => {
       map.off('movestart', onMoveStart)
-      map.off('move', updateCounts)
       map.off('moveend', onMoveEnd)
-      map.off('sourcedata', onSourceData)
+      map.off('idle', onIdle)
       if (pollTimer != null) window.clearTimeout(pollTimer)
     }
-  }, [showPolygons, visualSettings.showPolygonFill, onBoundaryStats, onBoundaryRefreshStateChange])
+  }, [showPolygons, filterMode, filteredViewportCount, loadingRecords, matchKeys, visualSettings.showPolygonFill, onBoundaryStats, onBoundaryRefreshStateChange])
 
   // Update topo overlay GeoJSON (terrain samples) + visibility.
   useEffect(() => {
@@ -1915,6 +2642,13 @@ function MapView({
       ])
     }
     if (map.getLayer(PMTILES_LINE_LAYER_ID)) {
+      map.setPaintProperty(PMTILES_LINE_LAYER_ID, 'line-color', [
+        'case',
+        ['boolean', ['feature-state', 'selected'], false], DATASET_COLORS.selected,
+        ['boolean', ['feature-state', 'hover'], false], DATASET_COLORS.selected,
+        ['boolean', ['feature-state', 'owner'], false], DATASET_COLORS.sbf,
+        DATASET_COLORS.polygon
+      ])
       map.setPaintProperty(PMTILES_LINE_LAYER_ID, 'line-width', [
         'case',
         ['boolean', ['feature-state', 'selected'], false], visualSettings.lineStrength * 3,
@@ -1922,6 +2656,7 @@ function MapView({
         ['boolean', ['feature-state', 'owner'], false], visualSettings.lineStrength * 2,
         visualSettings.lineStrength
       ])
+      map.setPaintProperty(PMTILES_LINE_LAYER_ID, 'line-opacity', 1)
     }
   }, [visualSettings.showPolygonFill, visualSettings.lineStrength])
 
@@ -1935,6 +2670,10 @@ function MapView({
 
     const nextSelectedAins = new Set<string>()
     // Highlight the active dossier parcel and any polygons selected via map selection.
+    if (activeParcelKey) {
+      const digits = String(activeParcelKey).replace(/[^0-9]/g, '')
+      if (digits.length >= 6 && digits.length <= 14) nextSelectedAins.add(digits)
+    }
     if (selectedParcel?.ain) nextSelectedAins.add(selectedParcel.ain)
     for (const id of selectedParcelIds) {
       const digits = String(id).replace(/[^0-9]/g, '')
@@ -1971,7 +2710,7 @@ function MapView({
       return
     }
     lastOwnerAinsRef.current = new Set(ownerAins)
-  }, [ownerAins, selectedParcel?.ain, selectedParcelIds])
+  }, [activeParcelKey, ownerAins, selectedParcel?.ain, selectedParcelIds])
 
   // Update GeoJSON source when parcels or selection changes
   useEffect(() => {
@@ -2008,7 +2747,7 @@ function MapView({
           assessorId: p.assessorId,
           isTarget: targetIds.includes(p.assessorId),
           isOwnerParcel: ownerAins.has(p.ain),
-          isSelected: selectedParcel?.assessorId === p.assessorId,
+          isSelected: activeParcelKey != null && parcelMatchesKey(p, activeParcelKey),
           dataSource: visualSettings.datasetColorDots ? parcelVisualSource(p) : 'parcel'
         }
       }))
@@ -2059,7 +2798,7 @@ function MapView({
       cancelled = true
       if (raf) cancelAnimationFrame(raf)
     }
-  }, [parcels, targetIds, ownerAins, selectedParcel, visualSettings])
+  }, [activeParcelKey, parcels, targetIds, ownerAins, selectedParcel, visualSettings])
 
   useEffect(() => {
     const map = mapRef.current
@@ -2088,17 +2827,6 @@ function MapView({
     }
   }, [heatCells, visualSettings.showHeatOverlay])
 
-  // Fly to selected parcel
-  useEffect(() => {
-    const map = mapRef.current
-    if (!map || !selectedParcel?.latitude || !selectedParcel?.longitude) return
-    map.flyTo({
-      center: [selectedParcel.longitude, selectedParcel.latitude],
-      zoom: Math.max(map.getZoom(), 14),
-      duration: 800
-    })
-  }, [selectedParcel])
-
   // Draw-a-boundary mode
   useEffect(() => {
     const map = mapRef.current
@@ -2106,8 +2834,10 @@ function MapView({
 
     if (isDrawing) {
       map.getCanvas().style.cursor = 'crosshair'
+      map.dragPan.disable()
 
       const onMouseDown = (e: maplibregl.MapMouseEvent) => {
+        e.preventDefault()
         drawStartRef.current = { lng: e.lngLat.lng, lat: e.lngLat.lat }
         drawStartScreenRef.current = { x: e.point.x, y: e.point.y }
         setDrawBox({ x: e.point.x, y: e.point.y, width: 0, height: 0 })
@@ -2194,6 +2924,7 @@ function MapView({
         map.off('mousedown', onMouseDown)
         map.off('mousemove', onMouseMove)
         map.off('mouseup', onMouseUp)
+        map.dragPan.enable()
         map.getCanvas().style.cursor = ''
         setDrawBox(null)
       }
@@ -2344,6 +3075,7 @@ export function ParcelExplorer() {
   const [isDrawing, setIsDrawing] = useState(false)
   const [pendingCount, setPendingCount] = useState<number | null>(null)
   const [pendingFilter, setPendingFilter] = useState<ParcelFilterQuery | null>(null)
+  const [matchingCount, setMatchingCount] = useState<number | null>(null)
   const [is3D, setIs3D] = useState(false)
   const [clayMode, setClayMode] = useState(false)
   const [showSun, setShowSun] = useState(false)
@@ -2352,6 +3084,14 @@ export function ParcelExplorer() {
   const [showAnalytics, setShowAnalytics] = useState(false)
   const [showPropstreamGrid, setShowPropstreamGrid] = useState(false)
   const [showVisualSettings, setShowVisualSettings] = useState(false)
+  const [filterPanelMinimized, setFilterPanelMinimized] = useState(false)
+  const [datasetPanelMinimized, setDatasetPanelMinimized] = useState(false)
+  const [dossierCollapsed, setDossierCollapsed] = useState(false)
+  const [bottomBarCollapsed, setBottomBarCollapsed] = useState(false)
+  const [selectionLocked, setSelectionLocked] = useState(false)
+  const [savedSelectionCount, setSavedSelectionCount] = useState<number | null>(null)
+  const [recordLimit, setRecordLimit] = useState(500)
+  const [editingRecordLimit, setEditingRecordLimit] = useState(false)
   const [visualSettings, setVisualSettings] = useState<VisualSettings>(DEFAULT_VISUAL_SETTINGS)
   const [selectedOwnerName, setSelectedOwnerName] = useState<string | null>(null)
   const [ownerParcelAins, setOwnerParcelAins] = useState<Set<string>>(new Set())
@@ -2381,6 +3121,7 @@ export function ParcelExplorer() {
   const [boundaryRefreshState, setBoundaryRefreshState] = useState<'idle' | 'moving' | 'settling'>('idle')
   const [selectedParcelIds, setSelectedParcelIds] = useState<Set<string>>(new Set())
   const [selectedGroupPolygons, setSelectedGroupPolygons] = useState<ParcelPolygon[]>([])
+  const [activeParcelKey, setActiveParcelKey] = useState<string | null>(null)
   const warmParcelPoolRef = useRef<Map<string, ParcelRecord>>(new Map())
   const [importingData, setImportingData] = useState(false)
   const [dropActive, setDropActive] = useState(false)
@@ -2444,10 +3185,10 @@ export function ParcelExplorer() {
       bounds: undefined,
       targetParcels: undefined,
       randomSample: false,
-      limit: 500
+      limit: recordLimit
     }))
     window.setTimeout(() => setAssembling(false), 120)
-  }, [])
+  }, [recordLimit])
 
   // Keep elapsed time "live" for loading steps so the overlay reflects reality (no stale UI).
   useEffect(() => {
@@ -2552,11 +3293,64 @@ export function ParcelExplorer() {
       sortField: filterQuery.sortField ?? '',
       sortDir: filterQuery.sortDir ?? '',
       targetParcels: filterQuery.targetParcels ?? '',
+      builtState: filterQuery.builtState ?? 'all',
       useType: filterQuery.useType ?? '',
       valueMin: filterQuery.valueMin ?? null,
       valueMax: filterQuery.valueMax ?? null,
       yearBuiltMin: filterQuery.yearBuiltMin ?? null,
       yearBuiltMax: filterQuery.yearBuiltMax ?? null,
+      effectiveYearMin: filterQuery.effectiveYearMin ?? null,
+      effectiveYearMax: filterQuery.effectiveYearMax ?? null,
+      rollYearMin: filterQuery.rollYearMin ?? null,
+      rollYearMax: filterQuery.rollYearMax ?? null,
+      sqftMin: filterQuery.sqftMin ?? null,
+      sqftMax: filterQuery.sqftMax ?? null,
+      bedMin: filterQuery.bedMin ?? null,
+      bedMax: filterQuery.bedMax ?? null,
+      bathMin: filterQuery.bathMin ?? null,
+      bathMax: filterQuery.bathMax ?? null,
+      unitMin: filterQuery.unitMin ?? null,
+      unitMax: filterQuery.unitMax ?? null,
+      buildingCountMin: filterQuery.buildingCountMin ?? null,
+      buildingCountMax: filterQuery.buildingCountMax ?? null,
+      buildingPermitCountMin: filterQuery.buildingPermitCountMin ?? null,
+      buildingPermitCountMax: filterQuery.buildingPermitCountMax ?? null,
+      electricalPermitCountMin: filterQuery.electricalPermitCountMin ?? null,
+      electricalPermitCountMax: filterQuery.electricalPermitCountMax ?? null,
+      submittedPermitCountMin: filterQuery.submittedPermitCountMin ?? null,
+      submittedPermitCountMax: filterQuery.submittedPermitCountMax ?? null,
+      inspectionCountMin: filterQuery.inspectionCountMin ?? null,
+      inspectionCountMax: filterQuery.inspectionCountMax ?? null,
+      storiesMin: filterQuery.storiesMin ?? null,
+      storiesMax: filterQuery.storiesMax ?? null,
+      propertyTaxable: filterQuery.propertyTaxable ?? '',
+      classification: filterQuery.classification ?? '',
+      regionNumber: filterQuery.regionNumber ?? '',
+      clusterCode: filterQuery.clusterCode ?? '',
+      landBaseYearMin: filterQuery.landBaseYearMin ?? null,
+      landBaseYearMax: filterQuery.landBaseYearMax ?? null,
+      improvementBaseYearMin: filterQuery.improvementBaseYearMin ?? null,
+      improvementBaseYearMax: filterQuery.improvementBaseYearMax ?? null,
+      landValueMin: filterQuery.landValueMin ?? null,
+      landValueMax: filterQuery.landValueMax ?? null,
+      improvementValueMin: filterQuery.improvementValueMin ?? null,
+      improvementValueMax: filterQuery.improvementValueMax ?? null,
+      taxableValueMin: filterQuery.taxableValueMin ?? null,
+      taxableValueMax: filterQuery.taxableValueMax ?? null,
+      homeOwnersExemptionMin: filterQuery.homeOwnersExemptionMin ?? null,
+      homeOwnersExemptionMax: filterQuery.homeOwnersExemptionMax ?? null,
+      realEstateExemptionMin: filterQuery.realEstateExemptionMin ?? null,
+      realEstateExemptionMax: filterQuery.realEstateExemptionMax ?? null,
+      fixtureValueMin: filterQuery.fixtureValueMin ?? null,
+      fixtureValueMax: filterQuery.fixtureValueMax ?? null,
+      fixtureExemptionMin: filterQuery.fixtureExemptionMin ?? null,
+      fixtureExemptionMax: filterQuery.fixtureExemptionMax ?? null,
+      personalPropertyValueMin: filterQuery.personalPropertyValueMin ?? null,
+      personalPropertyValueMax: filterQuery.personalPropertyValueMax ?? null,
+      personalPropertyExemptionMin: filterQuery.personalPropertyExemptionMin ?? null,
+      personalPropertyExemptionMax: filterQuery.personalPropertyExemptionMax ?? null,
+      totalExemptionMin: filterQuery.totalExemptionMin ?? null,
+      totalExemptionMax: filterQuery.totalExemptionMax ?? null,
       hasCofO: filterQuery.hasCofO ?? null
     })
   }, [])
@@ -2646,9 +3440,9 @@ export function ParcelExplorer() {
         west: SANTA_MONICA_MOUNTAINS_CENTER[0] - 0.08
       },
       randomSample: true,
-      limit: 500
+      limit: recordLimit
     }))
-  }, [])
+  }, [recordLimit])
 
   const handleStartEmpty = useCallback(() => {
     completeManualStartup('empty')
@@ -2987,6 +3781,7 @@ export function ParcelExplorer() {
       const data = await api.queryParcelFiltered(filterQuery)
       if (startupEpochRef.current !== loadEpoch || startupModeRef.current !== 'default') return
       setResult(data)
+      if (typeof data?.totalFound === 'number' && data.totalFound > 0) setMatchingCount(data.totalFound)
       markAssembly('Parcel Records', { status: 'done', rowCount: Number(data?.returnedCount ?? data?.allParcels?.length ?? 0) || 0 })
       if (!captureOnceRef.current.records && api?.captureMainWindow) {
         captureOnceRef.current.records = true
@@ -2997,6 +3792,7 @@ export function ParcelExplorer() {
       setRuntimeGateStage('owner')
       if (!selectedParcel && data.allParcels?.length > 0) {
         const first = data.targetParcels[0] ?? data.allParcels[0]
+        setActiveParcelKey(first.ain || first.assessorId)
         setSelectedParcel(first)
         setSelectedParcelIds(new Set(parcelRecordKeys(first)))
       }
@@ -3032,6 +3828,7 @@ export function ParcelExplorer() {
   // Filter change handler (with count check)
   const handleFilterChange = useCallback(async (newFilter: ParcelFilterQuery) => {
     setFilter(newFilter)
+    setMatchingCount(null)
     // Strict sequential startup: do not start querying parcel records until boundaries are visible and
     // the runtime gate has advanced into the records stage (or later).
     if (runtimeGateStage === 'basemap' || runtimeGateStage === 'boundaries') return
@@ -3039,11 +3836,14 @@ export function ParcelExplorer() {
     // Check count for large queries
     try {
       if (!api) throw new Error('RentSeeker desktop API is unavailable')
-      const count = await api.countParcels(newFilter)
-      if (count > 100000) {
-        setPendingCount(count)
-        setPendingFilter(newFilter)
-        return
+      if (!requiresEnrichedCount(newFilter)) {
+        const count = await api.countParcels(newFilter)
+        setMatchingCount(count)
+        if (count > 100000) {
+          setPendingCount(count)
+          setPendingFilter(newFilter)
+          return
+        }
       }
     } catch {
       // Count failed, just load
@@ -3051,21 +3851,21 @@ export function ParcelExplorer() {
 
     void loadData({
       ...newFilter,
-      limit: 500,
+      limit: recordLimit,
       includeCofO: showCofO,
       includeBuildingPermits: showBuildingPermits,
       includeElectricalPermits: showElectricalPermits,
       includeSubmittedPermits: showSubmittedPermits,
       includeInspections: showInspections
     })
-  }, [api, loadData, runtimeGateStage, showCofO, showBuildingPermits, showElectricalPermits, showSubmittedPermits, showInspections])
+  }, [api, loadData, recordLimit, runtimeGateStage, showCofO, showBuildingPermits, showElectricalPermits, showSubmittedPermits, showInspections])
 
   // Confirm large query
   const confirmLargeQuery = useCallback(() => {
     if (pendingFilter) {
       void loadData({
         ...pendingFilter,
-        limit: 500,
+        limit: recordLimit,
         includeCofO: showCofO,
         includeBuildingPermits: showBuildingPermits,
         includeElectricalPermits: showElectricalPermits,
@@ -3075,7 +3875,7 @@ export function ParcelExplorer() {
     }
     setPendingCount(null)
     setPendingFilter(null)
-  }, [pendingFilter, loadData, showCofO, showBuildingPermits, showElectricalPermits, showSubmittedPermits, showInspections])
+  }, [pendingFilter, loadData, recordLimit, showCofO, showBuildingPermits, showElectricalPermits, showSubmittedPermits, showInspections])
 
   // Toggle C-of-O
   const handleToggleCofO = useCallback((v: boolean) => {
@@ -3095,6 +3895,7 @@ export function ParcelExplorer() {
       ...patch
     }
     setFilter(next)
+    setMatchingCount(null)
     if (runtimeGateStage === 'basemap' || runtimeGateStage === 'boundaries') return
     void loadData(next)
   }, [filter, loadData, runtimeGateStage, showCofO, showBuildingPermits, showElectricalPermits, showSubmittedPermits, showInspections])
@@ -3102,7 +3903,7 @@ export function ParcelExplorer() {
   const handleBoundaryStats = useCallback((visibleCount: number, renderedCount: number, complete: boolean, suppressed: boolean) => {
     if (startupModeRef.current !== 'default') return
     setBoundariesSuppressedForDensity(suppressed)
-    setVisibleBoundaryCount(suppressed ? 0 : visibleCount)
+    setVisibleBoundaryCount(suppressed ? 0 : Math.max(visibleCount, renderedCount))
     setRenderedBoundaryCount(renderedCount)
     setBoundaryComplete(complete)
     if (pmtilesReady && (visibleCount > 0 || suppressed)) {
@@ -3126,7 +3927,7 @@ export function ParcelExplorer() {
       ...filter,
       bounds,
       targetParcels: undefined,
-      limit: 500,
+      limit: recordLimit,
       randomSample: true,
       includeCofO: showCofO,
       includeBuildingPermits: showBuildingPermits,
@@ -3135,26 +3936,41 @@ export function ParcelExplorer() {
       includeInspections: showInspections
     }
     setFilter(next)
+    setMatchingCount(null)
     // Strict sequential startup: do not query records until boundaries are actually visible and the
     // runtime gate has advanced into the records stage (or later).
     if (runtimeGateStage === 'basemap' || runtimeGateStage === 'boundaries') return
     if (viewportReloadRef.current != null) window.clearTimeout(viewportReloadRef.current)
     viewportReloadRef.current = window.setTimeout(() => {
+      void api?.countParcelBoundaries(bounds).then((count) => setVisibleBoundaryCount(count)).catch(() => undefined)
+      if (!requiresEnrichedCount(next)) {
+        void api?.countParcels(next).then((count) => setMatchingCount(count)).catch(() => undefined)
+      }
       void loadData(next, false)
     }, 250)
-  }, [api, filter, loadData, runtimeGateStage, showCofO, showBuildingPermits, showElectricalPermits, showSubmittedPermits, showInspections])
+  }, [api, filter, loadData, recordLimit, runtimeGateStage, showCofO, showBuildingPermits, showElectricalPermits, showSubmittedPermits, showInspections])
 
   const handleSelectParcelByKey = useCallback(async (parcelKey: string, polygon?: ParcelPolygon | null) => {
     if (polygon) setPolygonInteractionOk(true)
+    setBottomBarCollapsed(false)
+    setDossierCollapsed(false)
     setSelectedParcelIds(new Set(polygon ? parcelPolygonKeys(polygon) : [parcelKey]))
-    if (polygon) setSelectedGroupPolygons([polygon])
+    if (polygon && !selectionLocked) setSelectedGroupPolygons([polygon])
     try {
       if (!api) throw new Error('RentSeeker desktop API is unavailable')
+      const inResult = result?.allParcels.find((parcel) => parcelMatchesKey(parcel, parcelKey)) ?? null
+      if (inResult) {
+        setActiveParcelKey(inResult.ain || inResult.assessorId)
+        setSelectedParcel(inResult)
+        setSelectedParcelIds(new Set([...parcelRecordKeys(inResult), ...(polygon ? parcelPolygonKeys(polygon) : [])]))
+        return
+      }
       const pool = warmParcelPoolRef.current
       const normalized = parcelKey.replace(/[^0-9]/g, '')
       const pooled = pool.get(parcelKey) ?? pool.get(normalized)
       if (pooled) {
         setResult(current => mergeParcelIntoResult(current, pooled))
+        setActiveParcelKey(pooled.ain || pooled.assessorId)
         setSelectedParcel(pooled)
         setSelectedParcelIds(new Set([...parcelRecordKeys(pooled), ...(polygon ? parcelPolygonKeys(polygon) : [])]))
         return
@@ -3171,17 +3987,20 @@ export function ParcelExplorer() {
       const parcel = data.targetParcels[0] ?? data.allParcels[0]
       if (parcel) {
         setResult(current => mergeParcelIntoResult(current, parcel))
+        setActiveParcelKey(parcel.ain || parcel.assessorId)
         setSelectedParcel(parcel)
         setSelectedParcelIds(new Set([...parcelRecordKeys(parcel), ...(polygon ? parcelPolygonKeys(polygon) : [])]))
       }
     } catch {
       // Keep the geometry selection even if the enriched dossier lookup fails.
     }
-  }, [api, showCofO, showBuildingPermits, showElectricalPermits, showSubmittedPermits, showInspections])
+  }, [api, result, selectionLocked, showCofO, showBuildingPermits, showElectricalPermits, showSubmittedPermits, showInspections])
 
   const handleGroupSelect = useCallback((polygons: ParcelPolygon[], mode: ParcelSelectionMode) => {
     setIsDrawing(false)
     if (polygons.length > 0) setPolygonInteractionOk(true)
+    setBottomBarCollapsed(false)
+    setDossierCollapsed(false)
     const nextKeys = new Set(polygons.flatMap(parcelPolygonKeys))
     setSelectedParcelIds(current => {
       if (mode === 'add') return new Set([...current, ...nextKeys])
@@ -3193,6 +4012,7 @@ export function ParcelExplorer() {
       return nextKeys
     })
     setSelectedGroupPolygons(current => {
+      if (selectionLocked && current.length > 0) return current
       if (mode === 'add') {
         const byKey = new Map<string, ParcelPolygon>()
         current.forEach(poly => byKey.set(parcelPolygonKeys(poly)[0], poly))
@@ -3206,12 +4026,50 @@ export function ParcelExplorer() {
     })
     const first = polygons[0]
     if (first && mode !== 'subtract') void handleSelectParcelByKey(first.ain || first.apn, first)
-  }, [handleSelectParcelByKey])
+  }, [handleSelectParcelByKey, selectionLocked])
 
   const clearGroupSelection = useCallback(() => {
     setSelectedParcelIds(new Set())
     setSelectedGroupPolygons([])
   }, [])
+
+  useEffect(() => {
+    if (!selectedParcel) {
+      setActiveParcelKey(null)
+      return
+    }
+    setActiveParcelKey(selectedParcel.ain || selectedParcel.assessorId)
+  }, [selectedParcel])
+
+  useEffect(() => {
+    if (!result) return
+    if (!result.allParcels.length) {
+      setSelectedParcel(null)
+      setActiveParcelKey(null)
+      return
+    }
+    if (!activeParcelKey) {
+      const first = result.targetParcels[0] ?? result.allParcels[0]
+      if (first) {
+        setSelectedParcel(first)
+        setActiveParcelKey(first.ain || first.assessorId)
+      }
+      return
+    }
+    const canonical = result.allParcels.find((parcel) => parcelMatchesKey(parcel, activeParcelKey))
+    if (!canonical) {
+      const fallback = result.targetParcels[0] ?? result.allParcels[0]
+      if (fallback) {
+        setSelectedParcel(fallback)
+        setActiveParcelKey(fallback.ain || fallback.assessorId)
+        setSelectedParcelIds(new Set(parcelRecordKeys(fallback)))
+      }
+      return
+    }
+    if (!selectedParcel || selectedParcel.assessorId !== canonical.assessorId) {
+      setSelectedParcel(canonical)
+    }
+  }, [result, activeParcelKey, selectedParcel])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -3274,6 +4132,8 @@ export function ParcelExplorer() {
 
   const totalParcelUniverse = datasetTotals['LA County Assessor Parcels'] ?? result?.totalFound ?? 0
   const loadedRecordCount = result?.returnedCount ?? displayedParcels.length
+  const totalMatchingParcels = matchingCount ?? result?.totalFound ?? loadedRecordCount
+  const activeFilterMode = useMemo(() => filterModeActive(filter), [filter])
 
   // Max value for bar normalization
   const maxTotalValue = useMemo(() => {
@@ -3283,6 +4143,9 @@ export function ParcelExplorer() {
 
   // Select handler
   const handleSelectParcel = useCallback((parcel: ParcelRecord) => {
+    setBottomBarCollapsed(false)
+    setDossierCollapsed(false)
+    setActiveParcelKey(parcel.ain || parcel.assessorId)
     setSelectedParcel(parcel)
     setSelectedParcelIds(new Set(parcelRecordKeys(parcel)))
     const el = document.getElementById(`card-${parcel.assessorId}`)
@@ -3353,7 +4216,7 @@ export function ParcelExplorer() {
   /* ---------- MAIN LAYOUT ---------- */
   return (
     <div
-      className={`parcel-explorer ${dropActive ? 'drop-active' : ''} ${importingData ? 'importing-data' : ''}`}
+      className={`parcel-explorer ${dropActive ? 'drop-active' : ''} ${importingData ? 'importing-data' : ''} ${bottomBarCollapsed ? 'bottom-bar-collapsed' : ''} ${dossierCollapsed ? 'dossier-collapsed' : ''}`}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -3465,17 +4328,25 @@ export function ParcelExplorer() {
       )}
 
       {/* FILTER BAR (below header) */}
-      <FilterBar
-        filter={filter}
-        onFilterChange={handleFilterChange}
-        onDrawBoundary={() => setIsDrawing(!isDrawing)}
-        isDrawing={isDrawing}
-        resultCount={result?.totalFound ?? 0}
-        queryTimeMs={result?.queryTimeMs ?? 0}
-      />
+      {!filterPanelMinimized && (
+        <FilterBar
+          filter={filter}
+          onFilterChange={handleFilterChange}
+          onDrawBoundary={() => setIsDrawing(!isDrawing)}
+          isDrawing={isDrawing}
+          resultCount={totalMatchingParcels}
+          queryTimeMs={result?.queryTimeMs ?? 0}
+          onToggleMinimized={() => setFilterPanelMinimized(v => !v)}
+        />
+      )}
+      {filterPanelMinimized && (
+        <button className="pe-panel-bubble pe-panel-bubble-left" onClick={() => setFilterPanelMinimized(false)}>
+          FILTER
+        </button>
+      )}
 
       {/* DATASET LEGEND (top right, floats over map) */}
-      <DatasetLegend
+      {!datasetPanelMinimized && <DatasetLegend
         showCofO={showCofO}
         onToggleCofO={handleToggleCofO}
         showBuilding={showBuildingPermits}
@@ -3498,9 +4369,27 @@ export function ParcelExplorer() {
         inspectionCount={datasetCounts.inspection}
         datasetTotals={datasetTotals}
         manifestSteps={loadProgress?.steps ?? []}
-      />
+        onToggleMinimized={() => setDatasetPanelMinimized(v => !v)}
+      />}
+      {datasetPanelMinimized && (
+        <button className="pe-panel-bubble pe-panel-bubble-right" onClick={() => setDatasetPanelMinimized(false)}>
+          DATA
+        </button>
+      )}
 
-      <FactSourceManifestPanel entries={factSourceManifest} />
+      {dossierCollapsed && (
+        <button className="pe-panel-bubble pe-panel-bubble-dossier" onClick={() => setDossierCollapsed(false)}>
+          DOSSIER
+        </button>
+      )}
+
+      {bottomBarCollapsed && (
+        <button className="pe-panel-bubble pe-panel-bubble-bottom" onClick={() => setBottomBarCollapsed(false)}>
+          CONVEYOR
+        </button>
+      )}
+
+      {/* <FactSourceManifestPanel entries={factSourceManifest} /> */}
 
       {/* MAP (main area) */}
       <MapView
@@ -3509,7 +4398,11 @@ export function ParcelExplorer() {
         ownerAins={ownerParcelAins}
         heatCells={heatCells}
         selectedParcelIds={selectedParcelIds}
+        activeParcelKey={activeParcelKey}
         showPolygons={showPolygons}
+        filterMode={activeFilterMode}
+        filteredViewportCount={totalMatchingParcels}
+        loadingRecords={loading}
         visualSettings={visualSettings}
         selectedParcel={selectedParcel}
         terrainMetrics={terrainMetrics}
@@ -3559,20 +4452,53 @@ export function ParcelExplorer() {
       />
 
       {/* BOTTOM BAR */}
-      <div className="pe-bottom-bar">
+      <div className={`pe-bottom-bar ${bottomBarCollapsed ? 'collapsed' : ''}`}>
         <div className="pe-bottom-bar-header">
           <div className="pe-bottom-bar-title">Parcel Conveyor</div>
           <div className="pe-bottom-bar-count">
-            Loaded parcel records: {loadedRecordCount.toLocaleString()}
+            <button className={`pe-bottom-bar-action ${selectionLocked ? 'active' : ''}`} onClick={() => setSelectionLocked(v => !v)}>
+              {selectionLocked ? 'Unlock' : 'Lock'}
+            </button>
+            <button className="pe-bottom-bar-action" onClick={() => setSavedSelectionCount(selectedParcelIds.size || selectedGroupPolygons.length)}>
+              Save
+            </button>
+            {editingRecordLimit ? (
+              <input
+                className="pe-bottom-limit-input"
+                value={String(recordLimit)}
+                onChange={(e) => setRecordLimit(Math.max(1, Number(e.target.value.replace(/[^0-9]/g, '')) || 500))}
+                onBlur={() => setEditingRecordLimit(false)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    setEditingRecordLimit(false)
+                    void loadData({ ...filter, limit: recordLimit })
+                  }
+                }}
+                autoFocus
+              />
+            ) : (
+              <button className="pe-bottom-bar-limit" onClick={() => setEditingRecordLimit(true)}>
+                {loadedRecordCount.toLocaleString()} / {totalMatchingParcels.toLocaleString()}
+              </button>
+            )}
+            {savedSelectionCount != null && <span className="pe-bottom-bar-saved">saved {savedSelectionCount.toLocaleString()}</span>}
+            <button className="pe-bottom-bar-collapse" onClick={() => setBottomBarCollapsed(v => !v)}>–</button>
           </div>
         </div>
-        <div className="pe-bottom-scroll-area">
-          {displayedParcels.map((parcel, index) => (
+        {!bottomBarCollapsed && <div className={`pe-bottom-scroll-area ${loading ? 'loading' : ''}`}>
+          {loading ? Array.from({ length: Math.min(10, Math.max(4, Math.ceil(recordLimit / 80))) }).map((_, index) => (
+            <div key={`skeleton-${index}`} className="pe-card pe-card-skeleton">
+              <div className="pe-card-skeleton-line short" />
+              <div className="pe-card-skeleton-line" />
+              <div className="pe-card-skeleton-line medium" />
+              <div className="pe-card-skeleton-bar" />
+            </div>
+          )) : displayedParcels.map((parcel, index) => (
             <div key={parcel.assessorId} id={`card-${parcel.assessorId}`}>
               <ParcelCard
                 parcel={parcel}
                 isTarget={targetIds.includes(parcel.assessorId)}
-                isSelected={parcel.assessorId === selectedParcel?.assessorId || parcelRecordKeys(parcel).some(key => selectedParcelIds.has(key))}
+                isSelected={activeParcelKey != null && parcelMatchesKey(parcel, activeParcelKey)}
                 isOwnerParcel={ownerParcelAins.has(parcel.ain)}
                 index={index}
                 maxTotalValue={maxTotalValue}
@@ -3582,11 +4508,17 @@ export function ParcelExplorer() {
               />
             </div>
           ))}
-        </div>
+        </div>}
       </div>
 
       {/* DOSSIER SIDEBAR */}
-      <DossierPanel parcel={selectedParcel} onSelectOwner={handleSelectOwner} dossierProvenance={dossierProvenance} />
+      <DossierPanel
+        parcel={selectedParcel}
+        onSelectOwner={handleSelectOwner}
+        dossierProvenance={dossierProvenance}
+        collapsed={dossierCollapsed}
+        onToggleCollapsed={() => setDossierCollapsed(v => !v)}
+      />
 
       {assembling && (
         <LoadingCinema
