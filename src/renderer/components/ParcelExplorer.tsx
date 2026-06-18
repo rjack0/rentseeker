@@ -2197,6 +2197,7 @@ function MapView({
   const [hoveredParcelKey, setHoveredParcelKey] = useState<string | null>(null)
   const [hoverTooltip, setHoverTooltip] = useState<{ x: number; y: number; label: string; sublabel: string } | null>(null)
   const [drawBox, setDrawBox] = useState<{ x: number; y: number; width: number; height: number } | null>(null)
+  const [lineActivityState, setLineActivityState] = useState<'idle' | 'moving' | 'settling'>('idle')
   const onSelectParcelRef = useRef(onSelectParcel)
   const onSelectParcelByKeyRef = useRef(onSelectParcelByKey)
   const onViewportChangeRef = useRef(onViewportChange)
@@ -2683,40 +2684,41 @@ function MapView({
     let pollTimer: number | null = null
     let lastCountTs = 0
     const keyExpr: any = ['to-string', ['coalesce', ['get', 'AIN'], ['get', 'APN'], '']]
+    const activeBoundaryLoading = loadingRecords || lineActivityState !== 'idle'
 
     const lineOpacityExpression: any = filterMode
-      ? (loadingRecords
+      ? (activeBoundaryLoading
           ? [
               'case',
               ['boolean', ['feature-state', 'selected'], false], 1,
               ['boolean', ['feature-state', 'hover'], false], 1,
               ['boolean', ['feature-state', 'owner'], false], 0.95,
-              0.18
+              0.08
             ]
           : [
               'case',
               ['boolean', ['feature-state', 'selected'], false], 1,
               ['boolean', ['feature-state', 'hover'], false], 1,
               ['boolean', ['feature-state', 'owner'], false], 0.95,
-              ['match', keyExpr, ['literal', matchKeys], 1, 0.18]
+              ['match', keyExpr, ['literal', matchKeys], 1, 0.06]
             ])
-      : 1
+      : (activeBoundaryLoading ? 0.82 : 1)
 
     const fillOpacityExpression: any = filterMode
-      ? (loadingRecords
+      ? (activeBoundaryLoading
           ? [
               'case',
               ['boolean', ['feature-state', 'selected'], false], 0.18,
               ['boolean', ['feature-state', 'hover'], false], 0.14,
               ['boolean', ['feature-state', 'owner'], false], 0.1,
-              0.015
+              0.008
             ]
           : [
               'case',
               ['boolean', ['feature-state', 'selected'], false], 0.18,
               ['boolean', ['feature-state', 'hover'], false], 0.14,
               ['boolean', ['feature-state', 'owner'], false], 0.1,
-              ['match', keyExpr, ['literal', matchKeys], visualSettings.showPolygonFill ? 0.05 : 0.02, 0.01]
+              ['match', keyExpr, ['literal', matchKeys], visualSettings.showPolygonFill ? 0.05 : 0.02, 0.006]
             ])
       : [
           'case',
@@ -2731,7 +2733,7 @@ function MapView({
         map.setFilter(PMTILES_LINE_LAYER_ID, null as any)
         map.setLayoutProperty(PMTILES_LINE_LAYER_ID, 'visibility', showPolygons ? 'visible' : 'none')
         map.setPaintProperty(PMTILES_LINE_LAYER_ID, 'line-opacity', lineOpacityExpression)
-        map.setPaintProperty(PMTILES_LINE_LAYER_ID, 'line-dasharray', filterMode && loadingRecords ? [0.5, 2] : [1, 0])
+        map.setPaintProperty(PMTILES_LINE_LAYER_ID, 'line-dasharray', activeBoundaryLoading ? [0.6, 1.8] : [1, 0])
       }
       if (map.getLayer(PMTILES_FILL_LAYER_ID)) {
         map.setFilter(PMTILES_FILL_LAYER_ID, null as any)
@@ -2773,6 +2775,7 @@ function MapView({
     updateCounts()
     const onMoveStart = () => {
       if (!showPolygons) return
+      setLineActivityState('moving')
       onBoundaryRefreshStateChange?.('moving')
       if (pollTimer != null) {
         window.clearTimeout(pollTimer)
@@ -2781,16 +2784,19 @@ function MapView({
     }
     const onMoveEnd = () => {
       if (!showPolygons) return
+      setLineActivityState('settling')
       onBoundaryRefreshStateChange?.('settling')
       if (pollTimer != null) window.clearTimeout(pollTimer)
       pollTimer = window.setTimeout(() => {
         updateCounts()
+        setLineActivityState('idle')
         onBoundaryRefreshStateChange?.('idle')
       }, 320)
     }
     const onIdle = () => {
       if (!showPolygons) return
       updateCounts()
+      if (!loadingRecords) setLineActivityState('idle')
     }
     map.on('movestart', onMoveStart)
     map.on('moveend', onMoveEnd)
@@ -2803,7 +2809,7 @@ function MapView({
       map.off('idle', onIdle)
       if (pollTimer != null) window.clearTimeout(pollTimer)
     }
-  }, [showPolygons, filterMode, filteredViewportCount, loadingRecords, matchKeys, visualSettings.showPolygonFill, onBoundaryStats, onBoundaryRefreshStateChange])
+  }, [showPolygons, filterMode, filteredViewportCount, loadingRecords, lineActivityState, matchKeys, visualSettings.showPolygonFill, onBoundaryStats, onBoundaryRefreshStateChange])
 
   // Update topo overlay GeoJSON (terrain samples) + visibility.
   useEffect(() => {
@@ -3429,7 +3435,7 @@ export function ParcelExplorer() {
     }
     return ({
     limit: 500,
-    randomSample: true,
+    randomSample: false,
     bounds: fallbackBounds,
     includeCofO: true,
     includeBuildingPermits: true,
@@ -3655,7 +3661,7 @@ export function ParcelExplorer() {
         east: SANTA_MONICA_MOUNTAINS_CENTER[0] + 0.08,
         west: SANTA_MONICA_MOUNTAINS_CENTER[0] - 0.08
       },
-      randomSample: true,
+      randomSample: false,
       limit: recordLimit
     }))
   }, [recordLimit])
@@ -4145,7 +4151,7 @@ export function ParcelExplorer() {
       bounds,
       targetParcels: undefined,
       limit: recordLimit,
-      randomSample: true,
+      randomSample: false,
       includeCofO: showCofO,
       includeBuildingPermits: showBuildingPermits,
       includeElectricalPermits: showElectricalPermits,
@@ -4395,10 +4401,16 @@ export function ParcelExplorer() {
   const totalParcelUniverse = datasetTotals['LA County Assessor Parcels'] ?? result?.totalFound ?? 0
   const loadedRecordCount = result?.returnedCount ?? displayedParcels.length
   const activeFilterMode = useMemo(() => filterModeActive(filter), [filter])
-  const totalMatchingParcels = matchingCount
-    ?? ((activeFilterMode && visibleBoundaryCount > loadedRecordCount)
-      ? visibleBoundaryCount
-      : (result?.totalFound ?? loadedRecordCount))
+  const totalMatchingParcels = useMemo(() => {
+    const counted = matchingCount ?? result?.totalFound ?? loadedRecordCount
+    if (filter.bounds) {
+      return Math.max(counted, visibleBoundaryCount, loadedRecordCount)
+    }
+    if (activeFilterMode) {
+      return Math.max(counted, loadedRecordCount)
+    }
+    return counted
+  }, [activeFilterMode, filter.bounds, loadedRecordCount, matchingCount, result?.totalFound, visibleBoundaryCount])
 
   // Max value for bar normalization
   const maxTotalValue = useMemo(() => {
